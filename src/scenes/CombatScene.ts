@@ -11,9 +11,9 @@ export class CombatScene extends Phaser.Scene {
   private enemyLabels: Phaser.GameObjects.Text[] = [];
   private log!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
-  private onBlur = (): void => { this.focused = false; this.clock.accumulator = 0; };
-  private onFocus = (): void => { this.focused = true; this.clock.accumulator = 0; };
-  private onVisibility = (): void => { this.clock.accumulator = 0; };
+  private onBlur = (): void => { this.focused = false; this.clock.accumulator = 0; this.clock.interrupted = true; };
+  private onFocus = (): void => { this.focused = true; this.clock.accumulator = 0; this.clock.interrupted = true; };
+  private onVisibility = (): void => { this.clock.accumulator = 0; this.clock.interrupted = true; };
 
   constructor() { super('combat'); }
 

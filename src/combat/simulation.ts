@@ -9,7 +9,7 @@ export interface Combatant {
 }
 export interface CombatEvent { kind: 'item' | 'enemy' | 'state'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string }
 export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; floor: string[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[] }
-export interface CombatClock { accumulator: number }
+export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
   return { id, name, side, slot, hp, maxHp: hp, status: side === 'hero' ? 'human' : 'enemy', items: [], targetPolicy: policy, attackDamage: side === 'enemy' ? 6 : 0, attackCooldownMs: 1800, attackRemainingMs: 1800, durability: 100, maxDurability: 100, wind: 0, maxWind: 100, rebirthMs: 0 };
@@ -76,8 +76,9 @@ export function projectEncounter(state: EncounterState): { enemyHp: number; cool
 }
 
 export function advanceClock(clock: CombatClock, deltaMs: number, visible: boolean, focused: boolean): number {
-  if (!visible || !focused) { clock.accumulator = 0; return 0; }
-  clock.accumulator += Math.max(0, Math.min(deltaMs, 250));
+  if (!visible || !focused) { clock.accumulator = 0; clock.interrupted = true; return 0; }
+  if (clock.interrupted) { clock.accumulator = 0; clock.interrupted = false; return 0; }
+  clock.accumulator += Math.max(0, deltaMs);
   const steps = Math.floor(clock.accumulator / 50);
   clock.accumulator -= steps * 50;
   return steps;

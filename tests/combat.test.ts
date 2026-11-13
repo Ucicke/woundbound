@@ -57,13 +57,14 @@ describe('browser combat clock', () => {
   it('produces equal fixed steps for equivalent frame partitions', () => {
     const a = { accumulator: 0 };
     const b = { accumulator: 0 };
-    expect(advanceClock(a, 200, true, true)).toBe(advanceClock(b, 50, true, true) + advanceClock(b, 150, true, true));
+    expect(advanceClock(a, 500, true, true)).toBe(advanceClock(b, 200, true, true) + advanceClock(b, 300, true, true));
   });
   it('discards hidden or unfocused elapsed time and resumes only when both return', () => {
     const clock = { accumulator: 25 };
     expect(advanceClock(clock, 5000, false, true)).toBe(0);
     expect(clock.accumulator).toBe(0);
     expect(advanceClock(clock, 5000, true, false)).toBe(0);
+    expect(advanceClock(clock, 5000, true, true)).toBe(0);
     expect(advanceClock(clock, 50, true, true)).toBe(1);
   });
 });
