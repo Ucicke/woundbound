@@ -42,6 +42,11 @@ export class GameUI {
         } else if (scenario === 'defeat') {
           state.heroes.forEach(candidate => { candidate.status = 'stopped'; candidate.durability = 1; });
           state.heroes.forEach(candidate => applyEffect(state, candidate.id, 'damage', 1));
+        } else if (scenario === 'log') {
+          state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
+          state.heroes.forEach(candidate => candidate.items.forEach(item => { item.cooldownMs = 250; item.remainingMs = 250; item.trigger = 'always'; item.reach = 'far'; }));
+          state.events = Array.from({ length: 50 }, (_, index) => ({ sequence: index + 1, kind: 'state' as const, actorId: hero.id, sourceId: hero.id, sourceName: hero.name, targetId: hero.id, targetName: hero.name, amount: 0, message: `Тестовое событие ${index + 1}` }));
+          state.nextEventSequence = 51;
         }
       }
     }
@@ -70,6 +75,7 @@ export class GameUI {
   }
 
   setPaused(paused: boolean): void { this.paused = paused; }
+  get dialogOpen(): boolean { return this.confirmReset; }
 
   private onClick(event: Event): void {
     const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]');
@@ -77,6 +83,7 @@ export class GameUI {
     const name = button.dataset.action;
     const value = button.dataset.value ?? '';
     const state = this.state;
+    if (this.confirmReset && name !== 'cancel-reset' && name !== 'confirm-reset') return;
     if (name === 'hero') {
       const target = state.heroes.find(hero => hero.id === value);
       const previous = state.heroes.find(hero => hero.id === this.heroId);
@@ -132,7 +139,9 @@ export class GameUI {
   private itemDescription(item: CombatItem, hero?: Combatant): string {
     const bonuses = hero ? itemBonuses(item, hero.items) : { damage: 0, cooldownFactor: 1, descriptions: [] };
     const cooldown = item.cooldownMs * bonuses.cooldownFactor / 1000;
-    return `${item.description ?? 'Автоматическое действие.'} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${bonuses.cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}`;
+    const amount = `${item.effect === 'heal' ? 'Лечение' : 'Урон'}: ${item.damage}${bonuses.damage ? ` → ${item.damage + bonuses.damage}` : ''}.`;
+    const reach = item.effect !== 'heal' && item.reach === 'near' ? ' Ближнее оружие действует с позиций 1–2.' : '';
+    return `${item.description ?? 'Автоматическое действие.'} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${bonuses.cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}`;
   }
 
   private preparation(): string {
@@ -165,11 +174,15 @@ export class GameUI {
       const evaluation = evaluateItem(this.state, hero, item);
       const effective = item.cooldownMs * itemBonuses(item, hero.items).cooldownFactor;
       const remaining = Math.max(0, item.remainingMs);
-      return `<div class="equipped"><div><strong>${escape(item.name)}</strong> <span>${(remaining / 1000).toFixed(1)} с</span></div><progress class="cooldown" value="${Math.max(0, effective - remaining)}" max="${effective}" aria-label="Готовность: ${escape(item.name)}"></progress><small>${escape(evaluation.reason ?? (evaluation.target ? `Цель: ${evaluation.target.name}` : 'Нет доступной цели'))}</small><details><summary data-key="details-${escape(item.id)}">Правила предмета</summary><p>${escape(this.itemDescription(item, hero))}</p></details></div>`;
+      return `<div class="equipped"><div><strong>${escape(item.name)}</strong> <span>${(remaining / 1000).toFixed(1)} с</span></div><progress class="cooldown" value="${Math.max(0, effective - remaining)}" max="${effective}" aria-label="Готовность: ${escape(item.name)}"></progress><small>${escape(evaluation.reason ?? (evaluation.target ? `Цель: ${evaluation.target.name}` : 'Нет доступной цели'))}</small><details data-details="item-${escape(item.id)}"><summary data-key="details-${escape(item.id)}">Правила предмета</summary><p>${escape(this.itemDescription(item, hero))}</p></details></div>`;
     }).join('') : '';
+    const grid = hero.side === 'hero' && hero.items.length ? `<details class="battle-backpack" data-details="grid-${escape(hero.id)}"><summary data-key="grid-${escape(hero.id)}">Рюкзак · расположение вещей</summary><div class="grid readonly-grid">${Array.from({ length: 16 }, (_, cell) => {
+      const item = hero.items.find(candidate => occupiedCells(candidate, candidate.cell ?? 0)?.includes(cell));
+      return `<span class="readonly-cell ${item ? 'occupied' : ''}" aria-label="Клетка ${cell + 1}: ${escape(item?.name ?? 'свободно')}">${item ? escape(item.name) : ''}</span>`;
+    }).join('')}</div>${hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(text => `<p>${escape(item.name)}: ${escape(text)}</p>`)).join('')}</details>` : '';
     const enemyTarget = hero.side === 'enemy' && hero.status === 'enemy' ? `<small>Цель: ${escape(chooseHeroTarget(this.state.heroes, hero.targetPolicy, hero.slot, hero.reach)?.name ?? 'нет доступной цели')}</small>` : '';
     const highlighted = performance.now() < this.highlightUntil && (this.latestAction?.actorId === hero.id ? 'action-source' : this.latestAction?.targetId === hero.id ? 'action-target' : '');
-    return `<article class="combatant ${hero.status} ${highlighted}"><div class="combatant-title"><h3>${hero.slot + 1}. ${escape(hero.name)}</h3><span class="state">${symbol} ${name}</span></div>${health}${enemyTarget}${hero.status === 'rebirthing' ? `<small>Осталось ${(hero.rebirthMs / 1000).toFixed(1)} с</small>` : ''}${winding}${items || (hero.side === 'hero' && hero.status !== 'dead' ? '<small class="muted">Нет предметов</small>' : '')}</article>`;
+    return `<article class="combatant ${hero.status} ${highlighted}"><div class="combatant-title"><h3>${hero.slot + 1}. ${escape(hero.name)}</h3><span class="state">${symbol} ${name}</span></div>${health}${enemyTarget}${hero.status === 'rebirthing' ? `<small>Осталось ${(hero.rebirthMs / 1000).toFixed(1)} с</small>` : ''}${winding}${items || (hero.side === 'hero' && hero.status !== 'dead' ? '<small class="muted">Нет предметов</small>' : '')}${grid}</article>`;
   }
 
   private battle(): string {
@@ -185,19 +198,30 @@ export class GameUI {
     if (this.inputHeld) return;
     const screen = this.root.querySelector<HTMLElement>('#screen')!;
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.key : undefined;
-    const openDetails = [...screen.querySelectorAll<HTMLDetailsElement>('details[open]')].map(element => element.parentElement?.querySelector('strong')?.textContent);
+    const openDetails = [...screen.querySelectorAll<HTMLDetailsElement>('details[open]')].map(element => element.dataset.details);
     const latest = [...this.state.events].reverse().find(event => event.kind === 'item' || event.kind === 'enemy');
     if (latest && latest !== this.latestAction) { this.latestAction = latest; this.highlightUntil = performance.now() + 800; }
     screen.innerHTML = this.state.phase === 'preparation' || this.showingInventory ? this.preparation() : this.battle();
-    screen.querySelectorAll<HTMLDetailsElement>('details').forEach(element => { if (openDetails.includes(element.parentElement?.querySelector('strong')?.textContent)) element.open = true; });
+    screen.querySelectorAll<HTMLDetailsElement>('details').forEach(element => { if (openDetails.includes(element.dataset.details)) element.open = true; });
     if (focused) [...screen.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === focused)?.focus({ preventScroll: true });
     const history = this.root.querySelector<HTMLElement>('#history-list')!;
-    const text = this.state.events.map(event => event.message).join('\n');
-    if (text !== this.previousLog) {
-      const previousTop = history.scrollTop;
-      history.textContent = text || 'Событий пока нет';
-      history.scrollTop = this.followsLog ? history.scrollHeight : previousTop;
-      this.previousLog = text;
+    const signature = this.state.events.map(event => event.sequence).join(',');
+    if (signature !== this.previousLog) {
+      const anchor = [...history.querySelectorAll<HTMLElement>('[data-sequence]')].find(entry => entry.offsetTop + entry.offsetHeight > history.scrollTop);
+      const anchorSequence = anchor?.dataset.sequence;
+      const anchorOffset = anchor ? history.scrollTop - anchor.offsetTop : 0;
+      const entries = document.createDocumentFragment();
+      for (const event of this.state.events) {
+        const entry = document.createElement('div');
+        entry.dataset.sequence = String(event.sequence);
+        entry.textContent = event.message;
+        entries.append(entry);
+      }
+      if (!this.state.events.length) entries.append('Событий пока нет');
+      history.replaceChildren(entries);
+      const matchingAnchor = [...history.querySelectorAll<HTMLElement>('[data-sequence]')].find(entry => entry.dataset.sequence === anchorSequence);
+      history.scrollTop = this.followsLog ? history.scrollHeight : matchingAnchor ? matchingAnchor.offsetTop + anchorOffset : 0;
+      this.previousLog = signature;
     }
     this.root.querySelector<HTMLElement>('.history')!.hidden = this.state.phase === 'preparation' || this.showingInventory;
   }

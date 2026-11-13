@@ -11,8 +11,8 @@ export interface Combatant {
   targetPolicy: TargetPolicy; attackDamage: number; attackCooldownMs: number; attackRemainingMs: number; reach?: Reach;
   durability: number; maxDurability: number; wind: number; maxWind: number; rebirthMs: number;
 }
-export interface CombatEvent { kind: 'item' | 'enemy' | 'state'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string }
-export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[] }
+export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string }
+export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[] }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
@@ -20,7 +20,7 @@ export function createActor(id: string, name: string, side: 'hero' | 'enemy', sl
 }
 
 export function createState(heroes: Combatant[], enemies: Combatant[]): EncounterState {
-  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [] };
+  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [] };
 }
 
 /** Prepare a fresh encounter without discarding item identities or cooldowns. */
@@ -89,6 +89,7 @@ export function evaluateItem(state: EncounterState, hero: Combatant, item: Comba
     target = item.healTarget === 'self' ? injured.find(candidate => candidate.id === hero.id) : injured.sort((a, b) => a.hp - b.hp || a.slot - b.slot)[0];
     if (!target) return { reason: 'Нет раненого человека' };
   } else {
+    if (item.reach === 'near' && hero.slot > 1) return { reason: 'Ближнее оружие действует только с позиций 1–2' };
     target = chooseEnemyTarget(state.enemies, item.targetPolicy, hero.slot, item.reach);
     if (!target) return { reason: 'Нет доступной цели' };
     if (item.trigger === 'targetBelowHalf' && target.hp / target.maxHp >= 0.5) return { target, reason: 'Цель должна быть ранена ниже половины' };
@@ -97,6 +98,7 @@ export function evaluateItem(state: EncounterState, hero: Combatant, item: Comba
 }
 
 function record(state: EncounterState, event: CombatEvent): void {
+  event.sequence = state.nextEventSequence++;
   state.events.push(event);
   if (state.events.length > 50) state.events.shift();
 }

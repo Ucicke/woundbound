@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
-import { chooseEnemyTarget, chooseHeroTarget, prepareEncounter, startBattle, stepEncounter, swapHeroPositions } from '../src/combat/simulation.ts';
+import { chooseEnemyTarget, chooseHeroTarget, evaluateItem, prepareEncounter, startBattle, stepEncounter, swapHeroPositions } from '../src/combat/simulation.ts';
 
 describe('formation and reach', () => {
   it('swaps identities and equipment atomically only during preparation', () => {
@@ -43,6 +43,7 @@ describe('formation and reach', () => {
     item.reach = 'near'; item.remainingMs = 0;
     state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
     hero.slot = 3;
+    expect(evaluateItem(state, hero, item).reason).toContain('позиций 1–2');
     stepEncounter(state, 50);
     expect(state.events.some(event => event.sourceId === item.id)).toBe(false);
     expect(item.remainingMs).toBe(0);

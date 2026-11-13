@@ -90,6 +90,10 @@ try {
   await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('.combatant progress.health') && document.querySelector('.equipped progress.cooldown'))", returnByValue: true })).result.value, 'Health and individual cooldown bars are missing');
   if (!(await call('Runtime.evaluate', { expression: "document.querySelector('.battle-grid section .combatant')?.querySelectorAll('.equipped progress.cooldown').length === 2", returnByValue: true })).result.value) throw new Error('Multiple equipped items do not have separate cooldown bars');
   await click('[data-action="restart"]');
+  const beforeConfirmation = (await call('Runtime.evaluate', { expression: "JSON.stringify([...document.querySelectorAll('.battle-grid progress')].map(p=>p.value))", returnByValue: true })).result.value;
+  await pause(2000);
+  const duringConfirmation = (await call('Runtime.evaluate', { expression: "JSON.stringify([...document.querySelectorAll('.battle-grid progress')].map(p=>p.value))", returnByValue: true })).result.value;
+  if (beforeConfirmation !== duringConfirmation) throw new Error('Combat advanced during restart confirmation');
   await click('[data-action="cancel-reset"]');
   if (!(await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('.combatant'))", returnByValue: true })).result.value) throw new Error('Cancel reset did not preserve the battle');
   await click('[data-action="restart"]');
@@ -124,6 +128,13 @@ try {
   await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=winding` });
   await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=wind]'))", returnByValue: true })).result.value, 'Stopped doll fixture did not appear');
   await call('Page.bringToFront');
+  await click('[data-action="restart"]');
+  const stoppedWind = (await call('Runtime.evaluate', { expression: "document.querySelector('.combatant.stopped progress.wind')?.value", returnByValue: true })).result.value;
+  await click('[data-action="wind"][data-value="hero-1"]');
+  await pause(100);
+  const blockedWind = (await call('Runtime.evaluate', { expression: "document.querySelector('.combatant.stopped progress.wind')?.value", returnByValue: true })).result.value;
+  if (stoppedWind !== blockedWind) throw new Error('Winding was accepted under the reset confirmation');
+  await click('[data-action="cancel-reset"]');
   for (let i = 0; i < 20; i++) await click('[data-action="wind"][data-value="hero-1"]');
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.combatant.active')?.textContent.includes('Кукла работает')", returnByValue: true })).result.value, 'Twenty browser clicks did not activate the doll');
   const otherTarget = await (await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' })).json();
@@ -159,7 +170,16 @@ try {
   await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=defeat` });
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.outcome')?.textContent.includes('Поражение')", returnByValue: true })).result.value, 'Controlled defeat did not appear');
   if ((await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=manage]'))", returnByValue: true })).result.value) throw new Error('Defeat incorrectly allowed distribution');
-  console.log('Browser tracer passed: placement, rejection, swap, action, bars, reset, responsive layout, winding, defeat and post-victory transfer.');
+  await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=log` });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelectorAll('#history-list [data-sequence]').length === 50", returnByValue: true })).result.value, 'Full log fixture did not appear');
+  await call('Runtime.evaluate', { expression: "(() => { const h=document.querySelector('#history-list'); h.scrollTop=h.children[30].offsetTop + 10; })()" });
+  await pause(200);
+  const anchorExpression = "(() => { const h=document.querySelector('#history-list'); return [...h.children].find(e => e.offsetTop + e.offsetHeight > h.scrollTop)?.dataset.sequence; })()";
+  const anchorBefore = (await call('Runtime.evaluate', { expression: anchorExpression, returnByValue: true })).result.value;
+  await pause(1200);
+  const anchorAfter = (await call('Runtime.evaluate', { expression: anchorExpression, returnByValue: true })).result.value;
+  if (!anchorBefore || anchorBefore !== anchorAfter) throw new Error(`History viewport shifted while old events expired: ${anchorBefore} -> ${anchorAfter}`);
+  console.log('Browser tracer passed: placement, rejection, swap, action, bars, reset pause, responsive layout, winding, defeat, transfer and stable log.');
 } finally {
   socket?.close();
   browser?.kill();

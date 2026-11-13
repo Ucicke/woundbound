@@ -29,7 +29,7 @@ export class CombatScene extends Phaser.Scene {
 
   update(time: number, delta: number): void {
     const visible = !document.hidden;
-    const steps = advanceClock(this.clock, delta, visible, this.focused);
+    const steps = advanceClock(this.clock, delta, visible, this.focused && !this.ui.dialogOpen);
     for (let i = 0; i < steps; i++) stepEncounter(this.ui.state, 50);
     this.ui.setPaused(!visible || !this.focused);
     if (time >= this.nextRender) { this.ui.render(); this.nextRender = time + 200; }
