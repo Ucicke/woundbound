@@ -4,7 +4,7 @@ import { itemBonuses, moveItem } from './inventory.ts';
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest';
 export type Reach = 'near' | 'far';
-export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf'; cell?: number; reach?: Reach; shape?: readonly (readonly [number, number])[]; tags?: string[] }
+export interface CombatItem { id: string; definitionId?: string; name: string; description?: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf' | 'targetBelowHalf'; cell?: number; reach?: Reach; shape?: readonly (readonly [number, number])[]; tags?: string[]; effect?: 'damage' | 'heal'; healTarget?: 'self' | 'lowest' }
 export interface Combatant {
   id: string; name: string; side: 'hero' | 'enemy'; slot: number;
   hp: number; maxHp: number; status: ActorStatus; items: CombatItem[];
@@ -79,6 +79,23 @@ export function chooseEnemyTarget(enemies: Combatant[], policy: TargetPolicy, sl
   return reachable(alive, slot, reach).sort((a, b) => policy === 'lowest' ? a.hp - b.hp || a.slot - b.slot : a.slot - b.slot)[0];
 }
 
+/** Shared by combat and the interface so the explanation follows real rules. */
+export function evaluateItem(state: EncounterState, hero: Combatant, item: CombatItem): { target?: Combatant; reason?: string } {
+  if (hero.status !== 'human' && hero.status !== 'active') return { reason: 'Владелец не действует' };
+  if (item.trigger === 'ownerBelowHalf' && (hero.status === 'human' ? hero.hp / hero.maxHp : hero.durability / hero.maxDurability) >= 0.5) return { reason: 'Владелец должен быть ранен ниже половины' };
+  let target: Combatant | undefined;
+  if (item.effect === 'heal') {
+    const injured = state.heroes.filter(candidate => candidate.status === 'human' && candidate.hp < candidate.maxHp);
+    target = item.healTarget === 'self' ? injured.find(candidate => candidate.id === hero.id) : injured.sort((a, b) => a.hp - b.hp || a.slot - b.slot)[0];
+    if (!target) return { reason: 'Нет раненого человека' };
+  } else {
+    target = chooseEnemyTarget(state.enemies, item.targetPolicy, hero.slot, item.reach);
+    if (!target) return { reason: 'Нет доступной цели' };
+    if (item.trigger === 'targetBelowHalf' && target.hp / target.maxHp >= 0.5) return { target, reason: 'Цель должна быть ранена ниже половины' };
+  }
+  return { target };
+}
+
 function record(state: EncounterState, event: CombatEvent): void {
   state.events.push(event);
   if (state.events.length > 50) state.events.shift();
@@ -141,14 +158,14 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     for (const item of hero.items) {
       item.remainingMs = Math.max(0, item.remainingMs - deltaMs);
       if (item.remainingMs > 0) continue;
-      if (item.trigger === 'ownerBelowHalf' && (hero.status === 'human' ? hero.hp / hero.maxHp : hero.durability / hero.maxDurability) >= 0.5) continue;
-      const target = chooseEnemyTarget(state.enemies, item.targetPolicy, hero.slot, item.reach);
-      if (!target) continue;
+      const { target, reason } = evaluateItem(state, hero, item);
+      if (!target || reason) continue;
       const healthBefore = target.hp;
       const bonuses = itemBonuses(item, hero.items);
-      applyEffect(state, target.id, 'damage', item.damage + bonuses.damage);
-      const dealt = healthBefore - target.hp;
-      record(state, { kind: 'item', actorId: hero.id, sourceId: item.id, sourceName: item.name, targetId: target.id, targetName: target.name, amount: dealt, message: `${item.name} → ${target.name}: ${dealt} урона` });
+      const healing = item.effect === 'heal';
+      applyEffect(state, target.id, healing ? 'heal' : 'damage', item.damage + bonuses.damage);
+      const dealt = healing ? target.hp - healthBefore : healthBefore - target.hp;
+      record(state, { kind: 'item', actorId: hero.id, sourceId: item.id, sourceName: item.name, targetId: target.id, targetName: target.name, amount: dealt, message: `${item.name} → ${target.name}: ${dealt} ${healing ? 'лечения' : 'урона'}` });
       item.remainingMs = item.cooldownMs * bonuses.cooldownFactor;
       if (state.outcome !== 'ongoing') return;
     }

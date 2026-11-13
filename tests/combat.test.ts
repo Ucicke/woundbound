@@ -43,6 +43,7 @@ describe('fixed encounter', () => {
     const hero = state.heroes[2];
     const item = hero.items[0];
     item.trigger = 'ownerBelowHalf';
+    item.reach = 'far';
     item.remainingMs = 0;
     stepEncounter(state, 50);
     expect(state.events.some(event => event.sourceId === item.id)).toBe(false);

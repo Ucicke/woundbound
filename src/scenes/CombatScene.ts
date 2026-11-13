@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { createFullEncounter } from '../combat/encounter.ts';
-import { advanceClock, chooseEnemyTarget, chooseHeroTarget, prepareEncounter, projectAction, projectHero, queueWinding, startBattle, stepEncounter, swapHeroPositions, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
+import { advanceClock, chooseHeroTarget, evaluateItem, prepareEncounter, projectAction, projectHero, queueWinding, startBattle, stepEncounter, swapHeroPositions, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
 import { areAdjacent, itemBonuses, moveItem, occupiedCells } from '../combat/inventory.ts';
 
@@ -162,6 +162,8 @@ export class CombatScene extends Phaser.Scene {
     const bonuses = hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(description => `${item.name}: ${description}`));
     if (bonuses.length) label(330, 395, bonuses.join('\n'), '14px');
     label(330, 425, this.preparationMessage, '16px');
+    const selected = [...hero.items, ...this.state.stash, ...this.state.floor].find(item => item.id === this.selectedItem);
+    if (selected) label(36, 530, `${selected.name}: ${selected.description ?? 'Автоматическая атака.'}\nКулдаун: ${(selected.cooldownMs / 1000).toFixed(1)} с`, '14px');
     const start = label(330, 490, this.managingResult ? 'Вернуться к результату' : '▶  Начать бой', '24px').setInteractive({ useHandCursor: true });
     start.on('pointerdown', () => {
       if (this.managingResult) { this.managingResult = false; this.renderPreparation(); }
@@ -190,8 +192,8 @@ export class CombatScene extends Phaser.Scene {
       if (hero.status === 'rebirthing') status = `ПЕРЕРОЖДЕНИЕ ${view.rebirthSeconds.toFixed(1)} с`;
       if (hero.status === 'stopped' || hero.status === 'active') status = `КУКЛА ${hero.status === 'stopped' ? '— НАЖИМАЙТЕ' : '— РАБОТАЕТ'}  П ${Math.ceil(hero.durability)}  З ${Math.ceil(hero.wind)}`;
       if (hero.status === 'dead') status = 'ОКОНЧАТЕЛЬНАЯ ГИБЕЛЬ';
-      const target = item && (hero.status === 'human' || hero.status === 'active') ? chooseEnemyTarget(this.state.enemies, item.targetPolicy, hero.slot, item.reach) : undefined;
-      this.heroLabels[i].setText([`${i + 1}. ${hero.name}  ${status}`, item ? `${item.name} ${(view.cooldownMs / 1000).toFixed(1)} с → ${target?.name ?? 'нет цели'}` : 'Без предмета']);
+      const evaluation = item ? evaluateItem(this.state, hero, item) : undefined;
+      this.heroLabels[i].setText([`${i + 1}. ${hero.name}  ${status}`, item ? `${item.name} ${(view.cooldownMs / 1000).toFixed(1)} с → ${evaluation?.reason ?? evaluation?.target?.name ?? 'нет цели'}` : 'Без предмета']);
       this.graphics.fillStyle(0x655037).fillRect(43, y + 48, 300, 4);
       this.graphics.fillStyle(0xc2a56d).fillRect(43, y + 48, Math.max(0, 300 * progress), 4);
       if (hero.status === 'rebirthing') {
@@ -221,6 +223,9 @@ export class CombatScene extends Phaser.Scene {
       if (heroSource >= 0 && enemyTarget >= 0) {
         this.graphics.strokeRoundedRect(40, 100 + heroSource * 88, 310, 25, 3);
         this.graphics.lineBetween(378, 114 + heroSource * 88, 568, 114 + enemyTarget * 88);
+      } else if (heroSource >= 0 && heroTarget >= 0) {
+        this.graphics.strokeRoundedRect(40, 100 + heroSource * 88, 310, 25, 3);
+        this.graphics.lineBetween(360, 114 + heroSource * 88, 360, 114 + heroTarget * 88);
       } else if (enemySource >= 0 && heroTarget >= 0) {
         this.graphics.strokeRoundedRect(568, 76 + enemySource * 88, 350, 76, 6);
         this.graphics.lineBetween(568, 114 + enemySource * 88, 378, 114 + heroTarget * 88);

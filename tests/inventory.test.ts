@@ -32,9 +32,9 @@ describe('inventory ownership and adjacency', () => {
     expect(itemBonuses(blade, hero.items).damage).toBe(2);
     expect(moveItem(state, stone.id, hero.id, 5)).toBe(true);
     expect(itemBonuses(blade, hero.items).damage).toBe(0);
-    const clockwork = state.heroes[2].items[0];
-    expect(moveItem(state, spring.id, state.heroes[2].id, 1)).toBe(true);
-    expect(itemBonuses(clockwork, state.heroes[2].items).cooldownFactor).toBeCloseTo(0.85);
+    const clockwork = state.heroes[3].items[0];
+    expect(moveItem(state, spring.id, state.heroes[3].id, 1)).toBe(true);
+    expect(itemBonuses(clockwork, state.heroes[3].items).cooldownFactor).toBeCloseTo(0.85);
   });
 
   it('applies displayed adjacency bonuses to damage and cooldown in real combat', () => {
@@ -44,12 +44,13 @@ describe('inventory ownership and adjacency', () => {
     const blade = state.stash.find(item => item.tags?.includes('blade'))!;
     const stone = state.stash.find(item => item.tags?.includes('whetstone'))!;
     const spring = state.stash.find(item => item.tags?.includes('spring'))!;
-    const clockwork = state.heroes[2].items[0];
+    const clockwork = state.heroes[3].items[0];
     moveItem(state, blade.id, hero.id, 0);
     moveItem(state, stone.id, hero.id, 1);
-    moveItem(state, spring.id, state.heroes[2].id, 1);
+    moveItem(state, spring.id, state.heroes[3].id, 1);
     blade.remainingMs = 0;
     clockwork.remainingMs = 0;
+    clockwork.trigger = 'always';
     state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
     startBattle(state);
     stepEncounter(state, 50);
