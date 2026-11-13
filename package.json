@@ -1,0 +1,20 @@
+{
+  "name": "woundbound",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit --strict --skipLibCheck --lib ES2022,DOM --module ESNext --moduleResolution bundler --target ES2022 --allowImportingTsExtensions src/main.ts"
+  },
+  "dependencies": { "phaser": "4.2.1" },
+  "devDependencies": { "typescript": "6.0.3", "vite": "8.3.7", "vitest": "5.1.0" },
+  "woundboundPackageEvidence": [
+    { "role": "renderer", "name": "phaser", "version": "4.2.1", "officialSource": "https://github.com/phaserjs/phaser", "repository": "https://github.com/phaserjs/phaser", "lifecycleScripts": {} },
+    { "role": "bundler", "name": "vite", "version": "8.3.7", "officialSource": "https://github.com/vitejs/vite", "repository": "https://github.com/vitejs/vite", "lifecycleScripts": {} },
+    { "role": "language", "name": "typescript", "version": "6.0.3", "officialSource": "https://github.com/microsoft/TypeScript", "repository": "https://github.com/microsoft/TypeScript", "lifecycleScripts": {} },
+    { "role": "test-runner", "name": "vitest", "version": "5.1.0", "officialSource": "https://github.com/vitest-dev/vitest", "repository": "https://github.com/vitest-dev/vitest", "lifecycleScripts": {} }
+  ]
+}
