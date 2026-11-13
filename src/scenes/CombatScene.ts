@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { createFullEncounter } from '../combat/encounter.ts';
-import { advanceClock, chooseEnemyTarget, chooseHeroTarget, placeStashItem, prepareEncounter, projectAction, projectHero, queueWinding, startBattle, stepEncounter, swapHeroPositions, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
+import { advanceClock, chooseEnemyTarget, chooseHeroTarget, prepareEncounter, projectAction, projectHero, queueWinding, startBattle, stepEncounter, swapHeroPositions, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
+import { areAdjacent, itemBonuses, moveItem, occupiedCells } from '../combat/inventory.ts';
 
 export class CombatScene extends Phaser.Scene {
   private state = createFullEncounter();
@@ -21,6 +22,8 @@ export class CombatScene extends Phaser.Scene {
   private selectedItem: string | null = null;
   private movingHero = false;
   private preparationMessage = '';
+  private managingResult = false;
+  private resultControl!: Phaser.GameObjects.Text;
   private onBlur = (): void => { this.focused = false; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onFocus = (): void => { this.focused = true; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onVisibility = (): void => { this.clock.accumulator = 0; this.clock.interrupted = true; };
@@ -64,6 +67,8 @@ export class CombatScene extends Phaser.Scene {
     this.add.text(30, 455, 'ЖУРНАЛ БОЯ  ·  колесо мыши — прокрутка', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
     this.log = this.add.text(30, 481, '', { fontFamily: 'Arial', fontSize: '15px', color: '#ded0b8', lineSpacing: 4 });
     this.floorText = this.add.text(30, 640, '', { fontFamily: 'Arial', fontSize: '14px', color: '#bca98d' });
+    this.resultControl = this.add.text(650, 640, 'Распределить предметы', { fontFamily: 'Arial', fontSize: '16px', color: '#e8bd72' }).setInteractive({ useHandCursor: true }).setVisible(false);
+    this.resultControl.on('pointerdown', () => { if (this.state.outcome === 'victory') { this.managingResult = true; this.renderPreparation(); } });
     this.preparation = this.add.container(0, 0).setDepth(100);
     this.renderPreparation();
     this.input.on('wheel', this.onWheel);
@@ -82,7 +87,7 @@ export class CombatScene extends Phaser.Scene {
 
   private renderPreparation(): void {
     this.preparation.removeAll(true);
-    if (this.state.phase !== 'preparation') return;
+    if (this.state.phase !== 'preparation' && !this.managingResult) return;
     const background = this.add.rectangle(480, 340, 960, 680, 0x171414);
     this.preparation.add(background);
     const label = (x: number, y: number, value: string, size = '18px'): Phaser.GameObjects.Text => {
@@ -96,28 +101,45 @@ export class CombatScene extends Phaser.Scene {
       const text = label(36, 110 + i * 52, `${i === this.selectedHero ? '▶ ' : ''}${i + 1}. ${hero.name}`);
       text.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
         if (this.movingHero && i !== this.selectedHero) {
-          swapHeroPositions(this.state, this.selectedHero, i);
-          this.selectedHero = i;
+          if (swapHeroPositions(this.state, this.selectedHero, i)) {
+            this.selectedHero = i;
+            this.preparationMessage = 'Позиции изменены';
+          }
           this.movingHero = false;
-          this.preparationMessage = 'Позиции изменены';
         } else { this.selectedHero = i; }
         this.renderPreparation();
       });
     });
-    const move = label(36, 345, this.movingHero ? 'Выберите другую позицию' : '↕  Переставить героя', '16px');
-    move.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.movingHero = !this.movingHero; this.renderPreparation(); });
+    if (this.state.phase === 'preparation') {
+      const move = label(36, 345, this.movingHero ? 'Выберите другую позицию' : '↕  Переставить героя', '16px');
+      move.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.movingHero = !this.movingHero; this.renderPreparation(); });
+    }
     const hero = this.state.heroes[this.selectedHero];
     label(330, 75, `Рюкзак: ${hero.name}`, '20px');
     for (let cell = 0; cell < 16; cell++) {
       const x = 350 + (cell % 4) * 65;
       const y = 140 + Math.floor(cell / 4) * 65;
-      const occupied = hero.items.find(item => item.cell === cell);
-      const square = this.add.rectangle(x, y, 58, 58, occupied ? 0x665037 : 0x302923).setStrokeStyle(1, 0xa8967e).setInteractive({ useHandCursor: true });
+      const occupied = hero.items.find(item => occupiedCells(item, item.cell ?? 0)?.includes(cell));
+      const highlighted = occupied && hero.items.some(other => other.id !== occupied.id && areAdjacent(occupied, other) && (
+        (occupied.tags?.includes('blade') && other.tags?.includes('whetstone')) ||
+        (occupied.tags?.includes('whetstone') && other.tags?.includes('blade')) ||
+        (occupied.tags?.includes('clockwork') && other.tags?.includes('spring')) ||
+        (occupied.tags?.includes('spring') && other.tags?.includes('clockwork'))
+      ));
+      const square = this.add.rectangle(x, y, 58, 58, occupied ? 0x665037 : 0x302923).setStrokeStyle(highlighted ? 3 : 1, highlighted ? 0xe8bd72 : 0xa8967e).setInteractive({ useHandCursor: true });
       this.preparation.add(square);
       square.on('pointerdown', () => {
-        if (this.selectedItem && placeStashItem(this.state, this.selectedItem, hero.id, cell)) {
-          this.preparationMessage = 'Предмет размещён'; this.selectedItem = null;
-        } else this.preparationMessage = 'Выберите предмет и свободную клетку';
+        if (this.selectedItem === occupied?.id) {
+          this.selectedItem = null;
+          this.preparationMessage = 'Выбор снят';
+        } else if (this.selectedItem) {
+          if (moveItem(this.state, this.selectedItem, hero.id, cell)) {
+            this.preparationMessage = 'Предмет размещён'; this.selectedItem = null;
+          } else this.preparationMessage = 'Предмет не помещается: проверьте границы и занятые клетки.';
+        } else if (occupied) {
+          this.selectedItem = occupied.id;
+          this.preparationMessage = `${occupied.name}. Выберите клетку или другого героя.`;
+        } else this.preparationMessage = 'Сначала выберите предмет';
         this.renderPreparation();
       });
       if (occupied) label(x - 23, y - 10, occupied.name.slice(0, 5), '13px');
@@ -128,9 +150,23 @@ export class CombatScene extends Phaser.Scene {
       const text = label(650, 115 + i * 42, `${this.selectedItem === item.id ? '▶ ' : ''}${item.name}`, '16px');
       text.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.selectedItem = item.id; this.preparationMessage = 'Выберите клетку рюкзака'; this.renderPreparation(); });
     });
+    if (this.state.phase === 'result') {
+      const floorY = 160 + Math.max(1, this.state.stash.length) * 42;
+      label(650, floorY, 'На полу', '20px');
+      if (!this.state.floor.length) label(650, floorY + 35, 'На полу нет предметов', '16px');
+      this.state.floor.forEach((item, i) => {
+        const text = label(650, floorY + 35 + i * 42, `${this.selectedItem === item.id ? '▶ ' : ''}${item.name}`, '16px');
+        text.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.selectedItem = item.id; this.preparationMessage = 'Выберите клетку рюкзака'; this.renderPreparation(); });
+      });
+    }
+    const bonuses = hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(description => `${item.name}: ${description}`));
+    if (bonuses.length) label(330, 395, bonuses.join('\n'), '14px');
     label(330, 425, this.preparationMessage, '16px');
-    const start = label(330, 490, '▶  Начать бой', '24px').setInteractive({ useHandCursor: true });
-    start.on('pointerdown', () => { if (startBattle(this.state)) this.renderPreparation(); });
+    const start = label(330, 490, this.managingResult ? 'Вернуться к результату' : '▶  Начать бой', '24px').setInteractive({ useHandCursor: true });
+    start.on('pointerdown', () => {
+      if (this.managingResult) { this.managingResult = false; this.renderPreparation(); }
+      else if (startBattle(this.state)) this.renderPreparation();
+    });
   }
 
   update(_time: number, delta: number): void {
@@ -138,6 +174,7 @@ export class CombatScene extends Phaser.Scene {
     const steps = advanceClock(this.clock, delta, visible, this.focused);
     for (let n = 0; n < steps; n++) stepEncounter(this.state, 50);
     this.statusText.setText(this.state.outcome === 'victory' ? 'ПОБЕДА' : this.state.outcome === 'defeat' ? 'ПОРАЖЕНИЕ' : !visible || !this.focused ? 'ПАУЗА' : 'БОЙ');
+    this.resultControl.setVisible(this.state.outcome === 'victory');
     this.renderBoard();
   }
 
@@ -191,7 +228,7 @@ export class CombatScene extends Phaser.Scene {
     }
     const end = Math.max(0, this.state.events.length - this.logOffset);
     this.log.setText(this.state.events.slice(Math.max(0, end - 7), end).map(event => projectAction(event).text));
-    const floorItems = this.state.floor.map(id => this.state.heroes.flatMap(hero => hero.items).find(item => item.id === id)?.name ?? id);
+    const floorItems = this.state.floor.map(item => item.name);
     this.floorText.setText(floorItems.length ? `На полу: ${floorItems.join(', ')}` : '');
   }
 }

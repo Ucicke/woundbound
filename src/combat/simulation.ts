@@ -1,9 +1,10 @@
 import { COMBAT_CONFIG } from './config.ts';
+import { itemBonuses, moveItem } from './inventory.ts';
 
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest';
 export type Reach = 'near' | 'far';
-export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf'; cell?: number; reach?: Reach }
+export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf'; cell?: number; reach?: Reach; shape?: readonly (readonly [number, number])[]; tags?: string[] }
 export interface Combatant {
   id: string; name: string; side: 'hero' | 'enemy'; slot: number;
   hp: number; maxHp: number; status: ActorStatus; items: CombatItem[];
@@ -11,7 +12,7 @@ export interface Combatant {
   durability: number; maxDurability: number; wind: number; maxWind: number; rebirthMs: number;
 }
 export interface CombatEvent { kind: 'item' | 'enemy' | 'state'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string }
-export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; floor: string[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[] }
+export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[] }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
@@ -27,20 +28,12 @@ export function prepareEncounter(state: EncounterState): void {
   state.phase = 'preparation';
   for (const hero of state.heroes) hero.items.forEach((item, index) => { item.cell = index; });
   const first = state.heroes[0]?.items.shift();
-  if (first) { delete first.cell; state.stash.push(first); }
+  if (first) { delete first.cell; state.stash.unshift(first); }
   state.item = state.heroes[0]?.items[0] ?? null;
 }
 
 export function placeStashItem(state: EncounterState, itemId: string, heroId: string, cell: number): boolean {
-  if (state.phase !== 'preparation' || !Number.isInteger(cell) || cell < 0 || cell >= 16) return false;
-  const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
-  const itemIndex = state.stash.findIndex(candidate => candidate.id === itemId);
-  if (!hero || itemIndex < 0 || hero.items.some(item => item.cell === cell)) return false;
-  const [item] = state.stash.splice(itemIndex, 1);
-  item.cell = cell;
-  hero.items.push(item);
-  state.item = state.heroes[0]?.items[0] ?? null;
-  return true;
+  return state.phase === 'preparation' && state.stash.some(item => item.id === itemId) && moveItem(state, itemId, heroId, cell);
 }
 
 export function startBattle(state: EncounterState): boolean {
@@ -115,7 +108,8 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
     target.wind = Math.max(0, target.wind - damage);
     if (target.durability === 0) {
       target.status = 'dead';
-      for (const item of target.items) if (!state.floor.includes(item.id)) state.floor.push(item.id);
+      for (const item of target.items.splice(0)) { delete item.cell; state.floor.push(item); }
+      state.item = state.heroes[0]?.items[0] ?? null;
       record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: target.name, targetId: target.id, targetName: target.name, amount: 0, message: `${target.name}: окончательная гибель` });
       resolveOutcome(state);
     } else if (target.wind === 0) target.status = 'stopped';
@@ -151,10 +145,11 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       const target = chooseEnemyTarget(state.enemies, item.targetPolicy, hero.slot, item.reach);
       if (!target) continue;
       const healthBefore = target.hp;
-      applyEffect(state, target.id, 'damage', item.damage);
+      const bonuses = itemBonuses(item, hero.items);
+      applyEffect(state, target.id, 'damage', item.damage + bonuses.damage);
       const dealt = healthBefore - target.hp;
       record(state, { kind: 'item', actorId: hero.id, sourceId: item.id, sourceName: item.name, targetId: target.id, targetName: target.name, amount: dealt, message: `${item.name} → ${target.name}: ${dealt} урона` });
-      item.remainingMs = item.cooldownMs;
+      item.remainingMs = item.cooldownMs * bonuses.cooldownFactor;
       if (state.outcome !== 'ongoing') return;
     }
   }

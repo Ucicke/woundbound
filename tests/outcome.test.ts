@@ -12,9 +12,10 @@ describe('encounter outcomes', () => {
     applyEffect(state, last.id, 'damage', 5);
     expect(last.status).toBe('dead');
     expect(state.outcome).toBe('defeat');
-    expect(state.floor.filter(id => id === itemId)).toHaveLength(1);
+    expect(state.floor.filter(item => item.id === itemId)).toHaveLength(1);
+    expect(last.items).toHaveLength(0);
     expect(applyEffect(state, last.id, 'damage', 5)).toBe(false);
-    expect(state.floor.filter(id => id === itemId)).toHaveLength(1);
+    expect(state.floor.filter(item => item.id === itemId)).toHaveLength(1);
   });
 
   it('does not defeat stopped or rebirthing survivors', () => {

@@ -11,7 +11,7 @@ describe('preparation and combat boundary', () => {
     stepEncounter(state, 5000);
     expect(state.events).toHaveLength(0);
     expect(placeStashItem(state, itemId, hero.id, 0)).toBe(true);
-    expect(state.stash).toHaveLength(0);
+    expect(state.stash.some(item => item.id === itemId)).toBe(false);
     expect(startBattle(state)).toBe(true);
     for (let n = 0; n < 40; n++) stepEncounter(state, 50);
     expect(state.events.some(event => event.sourceId === itemId && event.kind === 'item')).toBe(true);
