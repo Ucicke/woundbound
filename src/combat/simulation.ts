@@ -1,3 +1,5 @@
+import { COMBAT_CONFIG } from './config.ts';
+
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest';
 export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf' }
@@ -29,7 +31,8 @@ export function createEncounter(equipped = true): EncounterState {
 
 export function chooseHeroTarget(heroes: Combatant[], policy: TargetPolicy): Combatant | undefined {
   const alive = heroes.filter(actor => actor.status === 'human' || actor.status === 'stopped' || actor.status === 'active');
-  return [...alive].sort((a, b) => policy === 'lowest' ? a.hp - b.hp || a.slot - b.slot : a.slot - b.slot)[0];
+  const health = (actor: Combatant): number => actor.status === 'human' ? actor.hp : actor.durability;
+  return [...alive].sort((a, b) => policy === 'lowest' ? health(a) - health(b) || a.slot - b.slot : a.slot - b.slot)[0];
 }
 
 export function chooseEnemyTarget(enemies: Combatant[], policy: TargetPolicy): Combatant | undefined {
@@ -42,18 +45,58 @@ function record(state: EncounterState, event: CombatEvent): void {
   if (state.events.length > 50) state.events.shift();
 }
 
+export function queueWinding(state: EncounterState, actorId: string): void {
+  if (state.outcome === 'ongoing') state.commands.push(actorId);
+}
+
+export function applyEffect(state: EncounterState, targetId: string, kind: 'damage' | 'heal' | 'poison' | 'bleeding' | 'fear', amount: number): boolean {
+  const target = [...state.heroes, ...state.enemies].find(actor => actor.id === targetId);
+  if (!target || target.status === 'dead' || target.status === 'rebirthing' || state.outcome !== 'ongoing') return false;
+  const isDoll = target.status === 'stopped' || target.status === 'active';
+  if (isDoll && kind !== 'damage') return false;
+  if (kind === 'heal') { target.hp = Math.min(target.maxHp, target.hp + Math.max(0, amount)); return true; }
+  if (kind !== 'damage') return true;
+  const damage = Math.max(0, amount);
+  if (isDoll) {
+    target.durability = Math.max(0, target.durability - damage);
+    target.wind = Math.max(0, target.wind - damage);
+    if (target.durability === 0) {
+      target.status = 'dead';
+      for (const item of target.items) if (!state.floor.includes(item.id)) state.floor.push(item.id);
+      record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: target.name, targetId: target.id, targetName: target.name, amount: 0, message: `${target.name}: окончательная гибель` });
+    } else if (target.wind === 0) target.status = 'stopped';
+    return true;
+  }
+  target.hp = Math.max(0, target.hp - damage);
+  if (target.hp === 0 && target.side === 'hero') {
+    target.status = 'rebirthing';
+    target.rebirthMs = COMBAT_CONFIG.rebirthMs;
+    for (const item of target.items) item.remainingMs = item.cooldownMs;
+    record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: target.name, targetId: target.id, targetName: target.name, amount: 0, message: `${target.name}: перерождение` });
+  } else if (target.hp === 0) target.status = 'dead';
+  return true;
+}
+
 export function stepEncounter(state: EncounterState, deltaMs: number): void {
   if (state.outcome !== 'ongoing') return;
+  for (const hero of state.heroes) {
+    if (hero.status === 'rebirthing') {
+      hero.rebirthMs = Math.max(0, hero.rebirthMs - deltaMs);
+      if (hero.rebirthMs === 0) { hero.status = 'stopped'; hero.durability = hero.maxDurability = COMBAT_CONFIG.dollDurability; hero.wind = 0; hero.maxWind = COMBAT_CONFIG.maxWind; }
+    } else if (hero.status === 'active') {
+      hero.wind = Math.max(0, hero.wind - COMBAT_CONFIG.windPerSecond * deltaMs / 1000);
+      if (hero.wind === 0) hero.status = 'stopped';
+    }
+  }
   for (const hero of [...state.heroes].sort((a, b) => a.slot - b.slot)) {
     if (hero.status !== 'human' && hero.status !== 'active') continue;
     for (const item of hero.items) {
       item.remainingMs = Math.max(0, item.remainingMs - deltaMs);
       if (item.remainingMs > 0) continue;
-      if (item.trigger === 'ownerBelowHalf' && hero.hp >= hero.maxHp / 2) continue;
+      if (item.trigger === 'ownerBelowHalf' && (hero.status === 'human' ? hero.hp / hero.maxHp : hero.durability / hero.maxDurability) >= 0.5) continue;
       const target = chooseEnemyTarget(state.enemies, item.targetPolicy);
       if (!target) continue;
-      target.hp = Math.max(0, target.hp - item.damage);
-      if (target.hp === 0) target.status = 'dead';
+      applyEffect(state, target.id, 'damage', item.damage);
       record(state, { kind: 'item', actorId: hero.id, sourceId: item.id, sourceName: item.name, targetId: target.id, targetName: target.name, amount: item.damage, message: `${item.name} → ${target.name}: ${item.damage} урона` });
       item.remainingMs = item.cooldownMs;
     }
@@ -64,10 +107,15 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     if (enemy.attackRemainingMs > 0) continue;
     const target = chooseHeroTarget(state.heroes, enemy.targetPolicy);
     if (!target) continue;
-    target.hp = Math.max(0, target.hp - enemy.attackDamage);
-    if (target.hp === 0) target.status = 'dead';
+    applyEffect(state, target.id, 'damage', enemy.attackDamage);
     record(state, { kind: 'enemy', actorId: enemy.id, sourceId: enemy.id, sourceName: enemy.name, targetId: target.id, targetName: target.name, amount: enemy.attackDamage, message: `${enemy.name} → ${target.name}: ${enemy.attackDamage} урона` });
     enemy.attackRemainingMs = enemy.attackCooldownMs;
+  }
+  for (const actorId of state.commands.splice(0)) {
+    const doll = state.heroes.find(hero => hero.id === actorId);
+    if (!doll || doll.status !== 'stopped' || doll.durability <= 0) continue;
+    doll.wind = Math.min(doll.maxWind, doll.wind + doll.maxWind / COMBAT_CONFIG.clicksToFull);
+    if (doll.wind >= doll.maxWind) doll.status = 'active';
   }
 }
 
@@ -83,3 +131,4 @@ export function advanceClock(clock: CombatClock, deltaMs: number, visible: boole
   clock.accumulator -= steps * 50;
   return steps;
 }
+
