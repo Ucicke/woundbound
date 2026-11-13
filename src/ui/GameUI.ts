@@ -23,6 +23,10 @@ export class GameUI {
   private latestAction?: CombatEvent;
   private highlightUntil = 0;
   private inputHeld = false;
+  private resetFocusKey?: string;
+  private pendingFocusKey?: string;
+  private previewItem: string | null = null;
+  private previewFromFocus = false;
 
   constructor() {
     this.state = this.freshEncounter();
@@ -53,11 +57,50 @@ export class GameUI {
     this.heroId = this.state.heroes[0].id;
     this.root = document.getElementById('game-ui')!;
     this.root.innerHTML = '<main id="screen"></main><section class="history" aria-label="Журнал боя"><h2>Журнал боя</h2><div id="history-list" class="history-list" tabindex="0"></div></section>';
+    this.root.dataset.ready = 'true';
     this.root.addEventListener('click', event => this.onClick(event));
+    this.root.addEventListener('focusin', event => {
+      const target = event.target as Element;
+      if (target.closest('.item-preview')) return;
+      if (!target.matches(':focus-visible')) return;
+      const itemButton = target.closest<HTMLButtonElement>('button[data-action="item"]');
+      const cellButton = target.closest<HTMLButtonElement>('button[data-action="cell"]');
+      if (itemButton) {
+        this.previewItem = itemButton.dataset.value ?? null;
+        this.previewFromFocus = true;
+      } else if (cellButton) {
+        const hero = this.state.heroes.find(candidate => candidate.id === this.heroId);
+        const cell = Number(cellButton.dataset.value);
+        const occupied = hero?.items.find(item => occupiedCells(item, item.cell ?? 0)?.includes(cell));
+        this.previewItem = occupied?.id ?? this.selectedItem;
+        this.previewFromFocus = true;
+      } else {
+        this.previewItem = null;
+        this.previewFromFocus = false;
+      }
+      this.updateItemPreview();
+    });
     // Do not replace an interactive button between press and release: doing so
     // drops clicks (especially rapid winding) and keyboard activation.
     this.root.addEventListener('pointerdown', () => { this.inputHeld = true; });
-    this.root.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') this.inputHeld = true; });
+    this.root.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') this.inputHeld = true;
+      if (!this.confirmReset) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        this.confirmReset = false;
+        this.pendingFocusKey = this.resetFocusKey;
+        this.resetFocusKey = undefined;
+        this.render();
+      } else if (event.key === 'Tab') {
+        const dialog = this.root.querySelector<HTMLElement>('.confirmation');
+        const buttons = [...(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
+        if (buttons.length !== 2) return;
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        if (event.shiftKey && index <= 0) { event.preventDefault(); buttons[buttons.length - 1]!.focus(); }
+        else if (!event.shiftKey && index === buttons.length - 1) { event.preventDefault(); buttons[0]!.focus(); }
+      }
+    });
     const release = (): void => { window.setTimeout(() => { this.inputHeld = false; this.render(); }, 0); };
     window.addEventListener('pointerup', release);
     window.addEventListener('pointercancel', release);
@@ -80,6 +123,7 @@ export class GameUI {
   private onClick(event: Event): void {
     const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]');
     if (!button || button.disabled) return;
+    if (event instanceof MouseEvent && event.detail > 0) { this.previewItem = null; this.previewFromFocus = false; }
     const name = button.dataset.action;
     const value = button.dataset.value ?? '';
     const state = this.state;
@@ -109,18 +153,26 @@ export class GameUI {
       else this.message = 'Предмет не помещается: проверьте границы и занятые клетки.';
     } else if (name === 'start') {
       if (startBattle(state)) { this.selectedItem = null; this.message = ''; }
-    } else if (name === 'store' && this.selectedItem) {
-      if (storeItem(state, this.selectedItem)) { this.selectedItem = null; this.message = 'Предмет убран в запас'; }
+    } else if (name === 'store' && value) {
+      if (storeItem(state, value)) {
+        if (this.selectedItem === value) this.selectedItem = null;
+        if (this.previewItem === value) this.previewItem = null;
+        this.pendingFocusKey = `item-${value}`;
+        this.message = 'Предмет убран в запас';
+      }
     } else if (name === 'wind') {
       queueWinding(state, value);
-    } else if (name === 'manage' && state.outcome === 'victory') {
+    } else if (name === 'manage' && state.outcome !== 'ongoing') {
       this.showingInventory = true;
     } else if (name === 'result') {
       this.showingInventory = false;
     } else if (name === 'restart') {
+      this.resetFocusKey = button.dataset.key;
       this.confirmReset = true;
     } else if (name === 'cancel-reset') {
       this.confirmReset = false;
+      this.pendingFocusKey = this.resetFocusKey;
+      this.resetFocusKey = undefined;
     } else if (name === 'confirm-reset') {
       this.state = this.freshEncounter();
       this.heroId = this.state.heroes[0].id;
@@ -128,10 +180,14 @@ export class GameUI {
       this.swapping = false;
       this.showingInventory = false;
       this.confirmReset = false;
+      this.pendingFocusKey = 'start-';
+      this.resetFocusKey = undefined;
       this.message = '';
       this.previousLog = '\0';
       this.followsLog = true;
       this.latestAction = undefined;
+      this.previewItem = null;
+      this.previewFromFocus = false;
     }
     this.render();
   }
@@ -144,22 +200,36 @@ export class GameUI {
     return `${item.description ?? 'Автоматическое действие.'} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${bonuses.cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}`;
   }
 
+  private updateItemPreview(): void {
+    const preview = this.root.querySelector<HTMLElement>('.item-preview');
+    if (!preview) return;
+    const hero = this.state.heroes.find(candidate => candidate.id === this.heroId) ?? this.state.heroes[0];
+    const all = [...this.state.stash, ...this.state.floor, ...this.state.heroes.flatMap(candidate => candidate.items)];
+    const item = all.find(candidate => candidate.id === (this.previewFromFocus ? this.previewItem : this.selectedItem));
+    const owned = item ? hero.items.includes(item) : false;
+    const markup = item
+      ? `<strong>${escape(item.name)}</strong><p>${escape(this.itemDescription(item, owned ? hero : undefined))}</p>${owned ? `<button ${action('store', item.id)} aria-label="Убрать ${escape(item.name)} в запас">Убрать в запас</button>` : ''}`
+      : '';
+    if (preview.dataset.signature !== markup) {
+      preview.innerHTML = markup;
+      preview.dataset.signature = markup;
+    }
+  }
+
   private preparation(): string {
     const state = this.state;
     const hero = state.heroes.find(candidate => candidate.id === this.heroId) ?? state.heroes[0];
-    const all = [...state.stash, ...state.floor, ...state.heroes.flatMap(candidate => candidate.items)];
-    const selected = all.find(item => item.id === this.selectedItem);
     const cells = Array.from({ length: 16 }, (_, cell) => {
       const item = hero.items.find(candidate => occupiedCells(candidate, candidate.cell ?? 0)?.includes(cell));
       const related = item && hero.items.some(other => other.id !== item.id && areAdjacent(item, other) && ((item.tags?.includes('blade') && other.tags?.includes('whetstone')) || (item.tags?.includes('whetstone') && other.tags?.includes('blade')) || (item.tags?.includes('clockwork') && other.tags?.includes('spring')) || (item.tags?.includes('spring') && other.tags?.includes('clockwork'))));
       return `<button class="cell ${item ? 'occupied' : ''} ${related ? 'related' : ''} ${item?.id === this.selectedItem ? 'selected' : ''}" ${action('cell', String(cell))} aria-label="Клетка ${cell + 1}${item ? `: ${escape(item.name)}` : ': свободно'}">${item ? escape(item.name) : ''}</button>`;
     }).join('');
-    const heroButtons = state.heroes.map(candidate => `<button class="hero-choice ${hero.id === candidate.id ? 'selected' : ''}" ${action('hero', candidate.id)}><span>${candidate.slot + 1}</span> ${escape(candidate.name)}${candidate.status === 'dead' ? ' †' : ''}</button>`).join('');
-    const items = (list: CombatItem[], empty: string): string => list.length ? list.map(item => `<button class="stash-item ${item.id === this.selectedItem ? 'selected' : ''}" ${action('item', item.id)}>${escape(item.name)}</button>`).join('') : `<p class="muted">${escape(empty)}</p>`;
+    const heroButtons = state.heroes.map(candidate => `<button class="hero-choice ${hero.id === candidate.id ? 'selected' : ''}" ${action('hero', candidate.id)} aria-pressed="${hero.id === candidate.id}"><span>${candidate.slot + 1}</span> ${escape(candidate.name)}${candidate.status === 'dead' ? ' †' : ''}</button>`).join('');
+    const items = (list: CombatItem[], empty: string): string => list.length ? list.map(item => `<button class="stash-item ${item.id === this.selectedItem ? 'selected' : ''}" ${action('item', item.id)} aria-pressed="${item.id === this.selectedItem}" aria-label="${escape(`${item.name}. ${this.itemDescription(item)}`)}">${escape(item.name)}</button>`).join('') : `<p class="muted">${escape(empty)}</p>`;
     const bonuses = hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(text => `<li>${escape(item.name)}: ${escape(text)}</li>`)).join('');
     return `<header class="screen-head"><div><span class="eyebrow">${this.showingInventory ? 'ПОСЛЕ БОЯ' : 'ПОДГОТОВКА'}</span><h1>Отряд</h1></div>${this.showingInventory ? `<button ${action('result')}>Вернуться к результату</button>` : `<button class="primary" ${action('start')}>Начать бой</button>`}</header>
       <div class="preparation"><section class="panel formation-panel"><h2>Строй</h2><div class="hero-list">${heroButtons}</div>${state.phase === 'preparation' ? `<button ${action('swap')} aria-pressed="${this.swapping}">${this.swapping ? 'Выберите другую позицию' : 'Переставить героя'}</button>` : ''}</section>
-      <section class="panel backpack-panel"><h2>Рюкзак: ${escape(hero.name)}</h2><div class="grid">${cells}</div>${bonuses ? `<ul class="bonuses">${bonuses}</ul>` : ''}<p class="message" role="status">${escape(this.message)}</p>${selected ? `<div class="details"><strong>${escape(selected.name)}</strong><p>${escape(this.itemDescription(selected, hero.items.includes(selected) ? hero : undefined))}</p>${hero.items.includes(selected) ? `<button ${action('store')}>Убрать в запас</button>` : ''}</div>` : ''}</section>
+      <section class="panel backpack-panel"><h2>Рюкзак: ${escape(hero.name)}</h2>${hero.items.length ? '' : '<p class="muted empty-backpack">Рюкзак пуст. Выберите предмет в запасе и клетку рюкзака.</p>'}<div class="grid">${cells}</div>${bonuses ? `<ul class="bonuses">${bonuses}</ul>` : ''}<p class="message" role="status">${escape(this.message)}</p><div class="details item-preview" aria-live="polite"></div></section>
       <section class="panel stash-panel"><h2>Запас</h2><div class="stash">${items(state.stash, 'Запас пуст')}</div>${state.phase === 'result' ? `<h2>На полу</h2><div class="stash">${items(state.floor, 'На полу нет предметов')}</div>` : ''}</section></div>`;
   }
 
@@ -169,17 +239,17 @@ export class GameUI {
     const name = hero.side === 'enemy' && hero.status === 'dead' ? 'Побеждён' : defaultName;
     const isDoll = hero.status === 'stopped' || hero.status === 'active';
     const health = hero.status === 'rebirthing' ? bar('Перерождение', COMBAT_CONFIG.rebirthMs - hero.rebirthMs, COMBAT_CONFIG.rebirthMs, 'rebirth') : isDoll ? bar('Прочность', hero.durability, hero.maxDurability, 'durability') + bar('Завод', hero.wind, hero.maxWind, 'wind') : hero.status === 'dead' ? '' : bar('Здоровье', hero.hp, hero.maxHp, 'health');
-    const winding = hero.status === 'stopped' ? `<button class="wind-button" ${action('wind', hero.id)}>Завести · осталось ${Math.ceil((hero.maxWind - hero.wind) / (hero.maxWind / COMBAT_CONFIG.clicksToFull))}</button>` : '';
+    const winding = hero.status === 'stopped' ? `<button class="wind-button" ${action('wind', hero.id)} aria-label="Завести куклу ${escape(hero.name)}. Осталось нажатий: ${Math.ceil((hero.maxWind - hero.wind) / (hero.maxWind / COMBAT_CONFIG.clicksToFull))}">Завести · ${escape(hero.name)} · осталось ${Math.ceil((hero.maxWind - hero.wind) / (hero.maxWind / COMBAT_CONFIG.clicksToFull))}</button>` : '';
     const items = hero.side === 'hero' ? hero.items.map(item => {
       const evaluation = evaluateItem(this.state, hero, item);
       const effective = item.cooldownMs * itemBonuses(item, hero.items).cooldownFactor;
       const remaining = Math.max(0, item.remainingMs);
       return `<div class="equipped"><div><strong>${escape(item.name)}</strong> <span>${(remaining / 1000).toFixed(1)} с</span></div><progress class="cooldown" value="${Math.max(0, effective - remaining)}" max="${effective}" aria-label="Готовность: ${escape(item.name)}"></progress><small>${escape(evaluation.reason ?? (evaluation.target ? `Цель: ${evaluation.target.name}` : 'Нет доступной цели'))}</small><details data-details="item-${escape(item.id)}"><summary data-key="details-${escape(item.id)}">Правила предмета</summary><p>${escape(this.itemDescription(item, hero))}</p></details></div>`;
     }).join('') : '';
-    const grid = hero.side === 'hero' && hero.items.length ? `<details class="battle-backpack" data-details="grid-${escape(hero.id)}"><summary data-key="grid-${escape(hero.id)}">Рюкзак · расположение вещей</summary><div class="grid readonly-grid">${Array.from({ length: 16 }, (_, cell) => {
+    const grid = hero.side === 'hero' ? `<section class="battle-backpack" aria-label="Рюкзак ${escape(hero.name)}"><h4>Рюкзак</h4><div class="grid readonly-grid">${Array.from({ length: 16 }, (_, cell) => {
       const item = hero.items.find(candidate => occupiedCells(candidate, candidate.cell ?? 0)?.includes(cell));
       return `<span class="readonly-cell ${item ? 'occupied' : ''}" aria-label="Клетка ${cell + 1}: ${escape(item?.name ?? 'свободно')}">${item ? escape(item.name) : ''}</span>`;
-    }).join('')}</div>${hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(text => `<p>${escape(item.name)}: ${escape(text)}</p>`)).join('')}</details>` : '';
+    }).join('')}</div>${hero.items.length ? hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(text => `<p>${escape(item.name)}: ${escape(text)}</p>`)).join('') : '<small class="muted">Нет предметов</small>'}</section>` : '';
     const enemyTarget = hero.side === 'enemy' && hero.status === 'enemy' ? `<small>Цель: ${escape(chooseHeroTarget(this.state.heroes, hero.targetPolicy, hero.slot, hero.reach)?.name ?? 'нет доступной цели')}</small>` : '';
     const highlighted = performance.now() < this.highlightUntil && (this.latestAction?.actorId === hero.id ? 'action-source' : this.latestAction?.targetId === hero.id ? 'action-target' : '');
     return `<article class="combatant ${hero.status} ${highlighted}"><div class="combatant-title"><h3>${hero.slot + 1}. ${escape(hero.name)}</h3><span class="state">${symbol} ${name}</span></div>${health}${enemyTarget}${hero.status === 'rebirthing' ? `<small>Осталось ${(hero.rebirthMs / 1000).toFixed(1)} с</small>` : ''}${winding}${items || (hero.side === 'hero' && hero.status !== 'dead' ? '<small class="muted">Нет предметов</small>' : '')}${grid}</article>`;
@@ -188,9 +258,9 @@ export class GameUI {
   private battle(): string {
     const state = this.state;
     const result = state.outcome !== 'ongoing';
-    const notice = result ? `<section class="outcome" role="status"><h1>${state.outcome === 'victory' ? 'Победа' : 'Поражение'}</h1><div class="actions">${state.outcome === 'victory' ? `<button class="primary" ${action('manage')}>Распределить предметы</button>` : ''}<button ${action('restart')}>Начать заново</button></div></section>` : '';
-    const confirmation = this.confirmReset ? `<section class="confirmation" role="alertdialog" aria-label="Подтвердить новый бой"><h2>Начать заново?</h2><p>Текущий бой и подготовка будут сброшены.</p><div class="actions"><button class="danger" ${action('confirm-reset')}>Сбросить и начать заново</button><button ${action('cancel-reset')}>Вернуться к бою</button></div></section>` : '';
-    const cue = `<p class="action-cue">${performance.now() < this.highlightUntil && this.latestAction ? escape(this.latestAction.message) : ''}</p>`;
+    const notice = result ? `<section class="outcome" role="status"><h1>${state.outcome === 'victory' ? 'Победа' : 'Поражение'}</h1><div class="actions"><button class="primary" ${action('manage')}>Распределить предметы</button><button ${action('restart')}>Начать заново</button></div></section>` : '';
+    const confirmation = this.confirmReset ? `<section class="confirmation" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><h2 id="reset-title">Начать заново?</h2><p id="reset-description">Текущий бой и подготовка будут сброшены. Все изменения будут потеряны.</p><div class="actions"><button class="danger" ${action('confirm-reset')}>Сбросить и начать заново</button><button ${action('cancel-reset')}>${result ? 'Вернуться к результату' : 'Вернуться к бою'}</button></div></section>` : '';
+    const cue = `<p class="action-cue">${this.latestAction ? escape(this.latestAction.message) : ''}</p>`;
     return `<header class="screen-head"><h1>${this.paused && !result ? 'Пауза' : 'Бой'}</h1>${!result ? `<button ${action('restart')}>Начать заново</button>` : ''}</header>${notice}${confirmation}${cue}<div class="battle-grid"><section><h2>Отряд</h2><div class="combatants">${state.heroes.map(hero => this.combatant(hero)).join('')}</div></section><section><h2>Враги</h2><div class="combatants">${state.enemies.map(enemy => this.combatant(enemy)).join('')}</div></section></div>${state.floor.length ? `<p>На полу: ${state.floor.map(item => escape(item.name)).join(', ')}</p>` : ''}`;
   }
 
@@ -200,10 +270,29 @@ export class GameUI {
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.key : undefined;
     const openDetails = [...screen.querySelectorAll<HTMLDetailsElement>('details[open]')].map(element => element.dataset.details);
     const latest = [...this.state.events].reverse().find(event => event.kind === 'item' || event.kind === 'enemy');
-    if (latest && latest !== this.latestAction) { this.latestAction = latest; this.highlightUntil = performance.now() + 800; }
+    if (latest && latest !== this.latestAction) { this.latestAction = latest; this.highlightUntil = performance.now() + 1800; }
     screen.innerHTML = this.state.phase === 'preparation' || this.showingInventory ? this.preparation() : this.battle();
     screen.querySelectorAll<HTMLDetailsElement>('details').forEach(element => { if (openDetails.includes(element.dataset.details)) element.open = true; });
-    if (focused) [...screen.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === focused)?.focus({ preventScroll: true });
+    this.updateItemPreview();
+    const historyPanel = this.root.querySelector<HTMLElement>('.history')!;
+    if (this.confirmReset) {
+      for (const element of [...screen.children]) if (!element.classList.contains('confirmation')) element.setAttribute('inert', '');
+      historyPanel.setAttribute('inert', '');
+      const dialog = screen.querySelector<HTMLElement>('.confirmation')!;
+      const focusTarget = this.pendingFocusKey
+        ? [...dialog.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === this.pendingFocusKey)
+        : focused ? [...dialog.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === focused) : undefined;
+      (focusTarget ?? dialog.querySelector<HTMLButtonElement>('button'))?.focus({ preventScroll: true });
+    } else {
+      historyPanel.removeAttribute('inert');
+      if (this.pendingFocusKey) {
+        [...screen.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === this.pendingFocusKey)?.focus({ preventScroll: true });
+      } else if (focused) {
+        [...screen.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === focused)?.focus({ preventScroll: true });
+      }
+    }
+    this.pendingFocusKey = undefined;
+    this.root.querySelector<HTMLElement>('.history')!.hidden = this.state.phase === 'preparation' || this.showingInventory;
     const history = this.root.querySelector<HTMLElement>('#history-list')!;
     const signature = this.state.events.map(event => event.sequence).join(',');
     if (signature !== this.previousLog) {

@@ -61,6 +61,8 @@ try {
   await call('Page.navigate', { url: `http://127.0.0.1:${port}/` });
   await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=start]'))", returnByValue: true })).result.value, 'Preparation screen was not rendered');
   await call('Page.bringToFront');
+  await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=item][data-value=item-1]').focus({focusVisible:true})" });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.item-preview')?.textContent.includes('Урон')", returnByValue: true })).result.value, 'Focusing an item did not reveal its rule and effect');
   const click = async selector => {
     const expression = `(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) return null; element.scrollIntoView({block:'center'}); const r = element.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`;
     const point = (await call('Runtime.evaluate', { expression, returnByValue: true })).result.value;
@@ -80,15 +82,41 @@ try {
   await click('[data-action="item"][data-value="whetstone-1"]');
   await click('[data-action="cell"][data-value="1"]');
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.bonuses')?.textContent.includes('+2 урона')", returnByValue: true })).result.value, 'Adjacency bonus was not displayed');
+  await click('[data-action="cell"][data-value="0"]');
+  await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=cell][data-value=\"1\"]').focus({focusVisible:true})" });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.item-preview')?.textContent.includes('Точильный камень') && Boolean(document.querySelector('.item-preview [data-action=store][data-value=\"whetstone-1\"]'))", returnByValue: true })).result.value, 'Focusing another equipped item did not reveal its correct store action');
+  await call('Runtime.evaluate', { expression: "document.querySelector('.item-preview [data-action=store]').focus({focusVisible:true})" });
+  await pause(450);
+  const storeFocus = (await call('Runtime.evaluate', { expression: "({action:document.activeElement?.dataset.action,item:document.activeElement?.dataset.value})", returnByValue: true })).result.value;
+  if (storeFocus.action !== 'store' || storeFocus.item !== 'whetstone-1') throw new Error(`Store-button keyboard focus did not survive recurring renders: ${JSON.stringify(storeFocus)}`);
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await call('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13 });
+  await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=item][data-value=\"whetstone-1\"]')) && document.querySelector('[data-action=cell][data-value=\"0\"]')?.textContent.includes('Кровожадный клинок')", returnByValue: true })).result.value, 'Storing the focused item removed or retained the wrong item');
+  await click('[data-action="item"][data-value="mercy-1"]');
+  await click('[data-action="cell"][data-value="1"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('Предмет размещён')", returnByValue: true })).result.value, 'Second item could not be placed after storing a focused item');
   await click('[data-action="swap"]');
+  const swapState = (await call('Runtime.evaluate', { expression: "({button:document.querySelector('[data-action=swap]')?.outerHTML,message:document.querySelector('.message')?.textContent,heading:document.querySelector('.backpack-panel h2')?.textContent,phase:document.querySelector('.eyebrow')?.textContent})", returnByValue: true })).result.value;
+  if (!swapState.button?.includes('aria-pressed="true"')) throw new Error(`Formation swap mode did not activate: ${JSON.stringify(swapState)}`);
   await click('[data-action="hero"][data-value="hero-4"]');
-  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=hero][data-value=hero-1]')?.textContent.includes('4')", returnByValue: true })).result.value, 'Formation swap did not update the real hero position');
+  const swappedFormation = (await call('Runtime.evaluate', { expression: "[...document.querySelectorAll('.hero-choice')].map(button=>[button.dataset.value,button.textContent,button.getAttribute('aria-pressed')])", returnByValue: true })).result.value;
+  if (!swappedFormation.find(([id, label]) => id === 'hero-1' && label.startsWith('4 '))) throw new Error(`Formation swap did not update the real hero position: ${JSON.stringify(swappedFormation)}`);
   await click('[data-action="swap"]');
   await click('[data-action="hero"][data-value="hero-1"]');
   await click('[data-action="start"]');
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('#history-list')?.textContent.includes('Кровожадный клинок →')", returnByValue: true })).result.value, 'The equipped blade did not render a target and damage in the combat log');
   await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('.combatant progress.health') && document.querySelector('.equipped progress.cooldown'))", returnByValue: true })).result.value, 'Health and individual cooldown bars are missing');
   if (!(await call('Runtime.evaluate', { expression: "document.querySelector('.battle-grid section .combatant')?.querySelectorAll('.equipped progress.cooldown').length === 2", returnByValue: true })).result.value) throw new Error('Multiple equipped items do not have separate cooldown bars');
+  await click('[data-action="restart"]');
+  const dialogState = (await call('Runtime.evaluate', { expression: "({modal:document.querySelector('.confirmation')?.getAttribute('aria-modal'),focus:document.activeElement?.dataset.action,backgroundInert:document.querySelector('.battle-grid')?.hasAttribute('inert'),hasLossCopy:document.querySelector('.confirmation')?.textContent.includes('Все изменения будут потеряны')})", returnByValue: true })).result.value;
+  if (dialogState.modal !== 'true' || dialogState.focus !== 'confirm-reset' || !dialogState.backgroundInert || !dialogState.hasLossCopy) throw new Error(`Reset dialog accessibility failed: ${JSON.stringify(dialogState)}`);
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  const secondDialogFocus = (await call('Runtime.evaluate', { expression: "document.activeElement?.dataset.action", returnByValue: true })).result.value;
+  if (secondDialogFocus !== 'cancel-reset') throw new Error('Tab did not move focus within the confirmation dialog');
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  const restoredFocus = (await call('Runtime.evaluate', { expression: "document.activeElement?.dataset.action", returnByValue: true })).result.value;
+  if (restoredFocus !== 'restart') throw new Error('Escape did not close confirmation and restore focus');
   await click('[data-action="restart"]');
   const beforeConfirmation = (await call('Runtime.evaluate', { expression: "JSON.stringify([...document.querySelectorAll('.battle-grid progress')].map(p=>p.value))", returnByValue: true })).result.value;
   await pause(2000);
@@ -99,10 +127,12 @@ try {
   await click('[data-action="restart"]');
   await click('[data-action="confirm-reset"]');
   await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=start]'))", returnByValue: true })).result.value, 'Confirmed reset did not restore preparation');
+  await click('[data-action="item"][data-value="item-1"]');
+  await click('[data-action="cell"][data-value="5"]');
   for (const [width, height, dpr] of [[1280, 720, 1], [375, 812, 1], [375, 812, 2]]) {
     await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: dpr, mobile: false });
-    const metrics = (await call('Runtime.evaluate', { expression: `(() => { const b = document.querySelector('.cell').getBoundingClientRect(); const c = document.querySelector('canvas').getBoundingClientRect(); return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio,bodyFont:getComputedStyle(document.body).fontSize,cellFont:getComputedStyle(document.querySelector('.cell')).fontSize,cellWidth:b.width,cellHeight:b.height,horizontalOverflow:document.documentElement.scrollWidth>innerWidth,canvasCss:[c.width,c.height],canvasBacking:[document.querySelector('canvas').width,document.querySelector('canvas').height]}; })()`, returnByValue: true })).result.value;
-    if (metrics.horizontalOverflow || metrics.cellWidth < 44 || metrics.cellHeight < 44 || parseFloat(metrics.cellFont) < 14) throw new Error(`Responsive check failed: ${JSON.stringify(metrics)}`);
+    const metrics = (await call('Runtime.evaluate', { expression: `(() => { const b = document.querySelector('.cell').getBoundingClientRect(); const c = document.querySelector('canvas').getBoundingClientRect(); const overflowingCells=[...document.querySelectorAll('.cell.occupied')].filter(e=>e.scrollHeight>e.clientHeight).length; return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio,bodyFont:getComputedStyle(document.body).fontSize,cellFont:getComputedStyle(document.querySelector('.cell')).fontSize,cellWidth:b.width,cellHeight:b.height,overflowingCells,horizontalOverflow:document.documentElement.scrollWidth>innerWidth,canvasCss:[c.width,c.height],canvasBacking:[document.querySelector('canvas').width,document.querySelector('canvas').height]}; })()`, returnByValue: true })).result.value;
+    if (metrics.horizontalOverflow || metrics.overflowingCells || metrics.cellWidth < 44 || metrics.cellHeight < 44 || parseFloat(metrics.cellFont) < 14) throw new Error(`Responsive check failed: ${JSON.stringify(metrics)}`);
     console.log(`Browser metrics: ${JSON.stringify(metrics)}`);
   }
   await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=item][data-value=mercy-1]').focus()" });
@@ -110,6 +140,14 @@ try {
   await call('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13 });
   await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=item][data-value=mercy-1].selected'))", returnByValue: true })).result.value, 'Keyboard selection did not select the item');
+  const cellExists = (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=cell][data-value=\"5\"]'))", returnByValue: true })).result.value;
+  await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=cell][data-value=\"5\"]')?.focus({focusVisible:true})" });
+  const focusedPreview = {
+    active: (await call('Runtime.evaluate', { expression: "document.activeElement?.outerHTML", returnByValue: true })).result.value,
+    preview: (await call('Runtime.evaluate', { expression: "document.querySelector('.item-preview')?.textContent", returnByValue: true })).result.value,
+  };
+  if (!cellExists) throw new Error('Occupied-cell focus fixture was not found');
+  if (!focusedPreview.preview?.includes('Кровожадный клинок') || focusedPreview.preview.includes('Склянка милости')) throw new Error(`Focusing a different occupied cell did not update the item preview: ${JSON.stringify(focusedPreview)}`);
   await click('[data-action="cell"][data-value="0"]');
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('Предмет размещён')", returnByValue: true })).result.value, 'Narrow-viewport cell click failed');
   await call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
@@ -123,7 +161,9 @@ try {
   };
   await touch('[data-action="item"][data-value="heart-1"]');
   await touch('[data-action="cell"][data-value="1"]');
-  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=cell][data-value=\"1\"]')?.textContent.includes('Латунное сердце')", returnByValue: true })).result.value, 'Touch placement failed');
+  await pause(150);
+  const touchState = (await call('Runtime.evaluate', { expression: "({message:document.querySelector('.message')?.textContent,cell:document.querySelector('[data-action=cell][data-value=\"1\"]')?.textContent,selected:document.querySelector('.stash-item.selected')?.textContent,stash:document.querySelector('.stash-panel')?.textContent})", returnByValue: true })).result.value;
+  if (!touchState.cell?.includes('Латунное сердце')) throw new Error(`Touch placement failed: ${JSON.stringify(touchState)}`);
   await call('Emulation.setTouchEmulationEnabled', { enabled: false });
   await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=winding` });
   await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=wind]'))", returnByValue: true })).result.value, 'Stopped doll fixture did not appear');
@@ -169,7 +209,13 @@ try {
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('Предмет размещён') && !document.querySelector('[data-action=item][data-value=\"item-1\"]')", returnByValue: true })).result.value, 'Dropped item did not move to a surviving hero');
   await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=defeat` });
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.outcome')?.textContent.includes('Поражение')", returnByValue: true })).result.value, 'Controlled defeat did not appear');
-  if ((await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=manage]'))", returnByValue: true })).result.value) throw new Error('Defeat incorrectly allowed distribution');
+  if (!(await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=manage]'))", returnByValue: true })).result.value) throw new Error('Defeat did not allow post-battle distribution');
+  await click('[data-action="manage"]');
+  if (!(await call('Runtime.evaluate', { expression: "document.querySelector('.eyebrow')?.textContent.includes('ПОСЛЕ БОЯ') && Boolean(document.querySelector('[data-action=result]'))", returnByValue: true })).result.value) throw new Error('Defeat distribution did not open the post-battle inventory');
+  await click('[data-action="item"][data-value="item-1"]');
+  await click('[data-action="hero"][data-value="hero-2"]');
+  await click('[data-action="cell"][data-value="1"]');
+  if (!(await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('Предмет размещён') && document.querySelector('.hero-choice[aria-pressed=true]')?.textContent.includes('Охотница')", returnByValue: true })).result.value) throw new Error('A dropped item could not be redistributed after defeat');
   await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=log` });
   await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelectorAll('#history-list [data-sequence]').length === 50", returnByValue: true })).result.value, 'Full log fixture did not appear');
   await call('Runtime.evaluate', { expression: "(() => { const h=document.querySelector('#history-list'); h.scrollTop=h.children[30].offsetTop + 10; })()" });

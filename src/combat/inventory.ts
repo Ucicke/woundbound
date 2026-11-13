@@ -19,8 +19,8 @@ export function occupiedCells(item: CombatItem, cell: number): number[] | null {
 
 /** Move one real instance only after validating the complete destination. */
 export function moveItem(state: EncounterState, itemId: string, heroId: string, cell: number): boolean {
-  if (state.phase !== 'preparation' && !(state.phase === 'result' && state.outcome === 'victory')) return false;
-  const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
+  if (state.phase !== 'preparation' && state.phase !== 'result') return false;
+  const hero = state.heroes.find(candidate => candidate.id === heroId && (state.phase === 'result' || candidate.status !== 'dead'));
   const sources = [state.stash, state.floor, ...state.heroes.map(candidate => candidate.items)];
   const source = sources.find(items => items.some(item => item.id === itemId));
   const item = source?.find(candidate => candidate.id === itemId);
@@ -40,8 +40,8 @@ export function moveItem(state: EncounterState, itemId: string, heroId: string, 
 }
 
 export function storeItem(state: EncounterState, itemId: string): boolean {
-  if (state.phase !== 'preparation' && !(state.phase === 'result' && state.outcome === 'victory')) return false;
-  const owner = state.heroes.find(hero => hero.status !== 'dead' && hero.items.some(item => item.id === itemId));
+  if (state.phase !== 'preparation' && state.phase !== 'result') return false;
+  const owner = state.heroes.find(hero => (state.phase === 'result' || hero.status !== 'dead') && hero.items.some(item => item.id === itemId));
   const index = owner?.items.findIndex(item => item.id === itemId) ?? -1;
   if (!owner || index < 0) return false;
   const [item] = owner.items.splice(index, 1);

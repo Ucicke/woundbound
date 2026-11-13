@@ -63,7 +63,7 @@ describe('inventory ownership and adjacency', () => {
     expect(clockwork.remainingMs).toBeCloseTo(clockwork.cooldownMs * 0.85);
   });
 
-  it('drops duplicate-type instances once and allows transfer only after victory', () => {
+  it('drops duplicate-type instances once and allows transfer only after battle', () => {
     const state = createFullEncounter();
     const dead = state.heroes[0];
     const original = dead.items[0];
@@ -81,5 +81,26 @@ describe('inventory ownership and adjacency', () => {
     expect(state.floor.map(item => item.id)).toEqual([second.id]);
     expect(state.heroes[1].items.some(item => item.id === original.id)).toBe(true);
     expect(startBattle(state)).toBe(false);
+  });
+
+  it('allows post-defeat organizing of dropped items even when every recipient is dead', () => {
+    const state = createFullEncounter();
+    const fallen = state.heroes[0];
+    const item = fallen.items[0];
+    fallen.status = 'active'; fallen.durability = 1; fallen.wind = 10;
+    applyEffect(state, fallen.id, 'damage', 1);
+    state.heroes.slice(1).forEach(hero => { hero.status = 'dead'; });
+    state.outcome = 'defeat'; state.phase = 'result';
+    expect(state.floor).toContain(item);
+
+    const recipient = state.heroes[1];
+    const cell = Array.from({ length: 16 }, (_, index) => index).find(index => recipient.items.every(other => !occupiedCells(other, other.cell ?? 0)?.includes(index)))!;
+    expect(moveItem(state, item.id, recipient.id, cell)).toBe(true);
+    expect(state.floor).not.toContain(item);
+    expect(recipient.items).toContain(item);
+    expect(recipient.status).toBe('dead');
+    expect(storeItem(state, item.id)).toBe(true);
+    expect(state.stash).toContain(item);
+    expect(recipient.items).not.toContain(item);
   });
 });
