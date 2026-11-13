@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { createFullEncounter } from '../combat/encounter.ts';
-import { advanceClock, chooseEnemyTarget, chooseHeroTarget, placeStashItem, prepareEncounter, projectAction, projectHero, queueWinding, startBattle, stepEncounter, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
+import { advanceClock, chooseEnemyTarget, chooseHeroTarget, placeStashItem, prepareEncounter, projectAction, projectHero, queueWinding, startBattle, stepEncounter, swapHeroPositions, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
 
 export class CombatScene extends Phaser.Scene {
@@ -19,10 +19,29 @@ export class CombatScene extends Phaser.Scene {
   private preparation!: Phaser.GameObjects.Container;
   private selectedHero = 0;
   private selectedItem: string | null = null;
+  private movingHero = false;
   private preparationMessage = '';
   private onBlur = (): void => { this.focused = false; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onFocus = (): void => { this.focused = true; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onVisibility = (): void => { this.clock.accumulator = 0; this.clock.interrupted = true; };
+  private onFormationKey = (event: KeyboardEvent): void => {
+    if (this.state.phase !== 'preparation') return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      this.movingHero = !this.movingHero;
+      this.renderPreparation();
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      const next = Phaser.Math.Clamp(this.selectedHero + (event.key === 'ArrowUp' ? -1 : 1), 0, 3);
+      if (next !== this.selectedHero && this.movingHero) {
+        swapHeroPositions(this.state, this.selectedHero, next);
+        this.movingHero = false;
+        this.preparationMessage = 'Позиции изменены';
+      }
+      this.selectedHero = next;
+      this.renderPreparation();
+    }
+  };
   private onWheel = (_pointer: Phaser.Input.Pointer, _objects: Phaser.GameObjects.GameObject[], _dx: number, dy: number): void => {
     this.logOffset = Phaser.Math.Clamp(this.logOffset + (dy < 0 ? 1 : -1), 0, Math.max(0, this.state.events.length - 7));
   };
@@ -51,10 +70,12 @@ export class CombatScene extends Phaser.Scene {
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('focus', this.onFocus);
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('keydown', this.onFormationKey);
     this.events.once('shutdown', () => {
       window.removeEventListener('blur', this.onBlur);
       window.removeEventListener('focus', this.onFocus);
       document.removeEventListener('visibilitychange', this.onVisibility);
+      window.removeEventListener('keydown', this.onFormationKey);
       this.input.off('wheel', this.onWheel);
     });
   }
@@ -73,8 +94,18 @@ export class CombatScene extends Phaser.Scene {
     label(36, 75, 'Отряд', '20px');
     this.state.heroes.forEach((hero, i) => {
       const text = label(36, 110 + i * 52, `${i === this.selectedHero ? '▶ ' : ''}${i + 1}. ${hero.name}`);
-      text.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.selectedHero = i; this.renderPreparation(); });
+      text.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
+        if (this.movingHero && i !== this.selectedHero) {
+          swapHeroPositions(this.state, this.selectedHero, i);
+          this.selectedHero = i;
+          this.movingHero = false;
+          this.preparationMessage = 'Позиции изменены';
+        } else { this.selectedHero = i; }
+        this.renderPreparation();
+      });
     });
+    const move = label(36, 345, this.movingHero ? 'Выберите другую позицию' : '↕  Переставить героя', '16px');
+    move.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.movingHero = !this.movingHero; this.renderPreparation(); });
     const hero = this.state.heroes[this.selectedHero];
     label(330, 75, `Рюкзак: ${hero.name}`, '20px');
     for (let cell = 0; cell < 16; cell++) {
@@ -122,7 +153,7 @@ export class CombatScene extends Phaser.Scene {
       if (hero.status === 'rebirthing') status = `ПЕРЕРОЖДЕНИЕ ${view.rebirthSeconds.toFixed(1)} с`;
       if (hero.status === 'stopped' || hero.status === 'active') status = `КУКЛА ${hero.status === 'stopped' ? '— НАЖИМАЙТЕ' : '— РАБОТАЕТ'}  П ${Math.ceil(hero.durability)}  З ${Math.ceil(hero.wind)}`;
       if (hero.status === 'dead') status = 'ОКОНЧАТЕЛЬНАЯ ГИБЕЛЬ';
-      const target = item && (hero.status === 'human' || hero.status === 'active') ? chooseEnemyTarget(this.state.enemies, item.targetPolicy) : undefined;
+      const target = item && (hero.status === 'human' || hero.status === 'active') ? chooseEnemyTarget(this.state.enemies, item.targetPolicy, hero.slot, item.reach) : undefined;
       this.heroLabels[i].setText([`${i + 1}. ${hero.name}  ${status}`, item ? `${item.name} ${(view.cooldownMs / 1000).toFixed(1)} с → ${target?.name ?? 'нет цели'}` : 'Без предмета']);
       this.graphics.fillStyle(0x655037).fillRect(43, y + 48, 300, 4);
       this.graphics.fillStyle(0xc2a56d).fillRect(43, y + 48, Math.max(0, 300 * progress), 4);
@@ -139,7 +170,7 @@ export class CombatScene extends Phaser.Scene {
     this.state.enemies.forEach((enemy, i) => {
       const y = 76 + i * 88;
       this.graphics.fillStyle(0x352424).fillRoundedRect(568, y, 350, 76, 6);
-      this.enemyLabels[i].setText([`${i + 1}. ${enemy.name}  HP ${Math.ceil(enemy.hp)}/${enemy.maxHp}`, enemy.status === 'dead' ? 'Побеждён' : `Цель: ${chooseHeroTarget(this.state.heroes, enemy.targetPolicy)?.name ?? 'нет цели'}`]);
+      this.enemyLabels[i].setText([`${i + 1}. ${enemy.name}  HP ${Math.ceil(enemy.hp)}/${enemy.maxHp}`, enemy.status === 'dead' ? 'Побеждён' : `Цель: ${chooseHeroTarget(this.state.heroes, enemy.targetPolicy, enemy.slot, enemy.reach)?.name ?? 'нет цели'}`]);
     });
     const latest = [...this.state.events].reverse().find(event => event.kind === 'item' || event.kind === 'enemy');
     if (latest && latest !== this.lastAction) { this.lastAction = latest; this.flashUntil = this.time.now + 500; }

@@ -5,12 +5,13 @@ export function createFullEncounter(): EncounterState {
   const itemNames = ['Кровожадный клинок', 'Ржавый кинжал', 'Проклятый молот', 'Ревнивый фонарь'];
   const heroes = heroNames.map((name, slot) => {
     const hero = createActor(`hero-${slot + 1}`, name, 'hero', slot, 85);
-    hero.items.push({ id: `item-${slot + 1}`, name: itemNames[slot], damage: 8 + slot, cooldownMs: 1300 + slot * 200, remainingMs: 1300 + slot * 200, targetPolicy: slot % 2 ? 'lowest' : 'front', trigger: 'always' });
+    hero.items.push({ id: `item-${slot + 1}`, name: itemNames[slot], damage: 8 + slot, cooldownMs: 1300 + slot * 200, remainingMs: 1300 + slot * 200, targetPolicy: slot % 2 ? 'lowest' : 'front', trigger: 'always', reach: slot < 2 ? 'near' : 'far' });
     return hero;
   });
   const enemies = ['Чумная крыса', 'Культист', 'Чумная крыса', 'Культист'].map((name, slot) => {
     const enemy = createActor(`enemy-${slot + 1}`, name, 'enemy', slot, 100, slot % 2 ? 'lowest' : 'front');
     enemy.attackDamage = slot % 2 ? 7 : 6;
+    enemy.reach = slot % 2 ? 'far' : 'near';
     enemy.attackCooldownMs = 1500 + slot * 150;
     enemy.attackRemainingMs = enemy.attackCooldownMs;
     return enemy;

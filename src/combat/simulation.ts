@@ -2,11 +2,12 @@ import { COMBAT_CONFIG } from './config.ts';
 
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest';
-export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf'; cell?: number }
+export type Reach = 'near' | 'far';
+export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf'; cell?: number; reach?: Reach }
 export interface Combatant {
   id: string; name: string; side: 'hero' | 'enemy'; slot: number;
   hp: number; maxHp: number; status: ActorStatus; items: CombatItem[];
-  targetPolicy: TargetPolicy; attackDamage: number; attackCooldownMs: number; attackRemainingMs: number;
+  targetPolicy: TargetPolicy; attackDamage: number; attackCooldownMs: number; attackRemainingMs: number; reach?: Reach;
   durability: number; maxDurability: number; wind: number; maxWind: number; rebirthMs: number;
 }
 export interface CombatEvent { kind: 'item' | 'enemy' | 'state'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string }
@@ -48,6 +49,17 @@ export function startBattle(state: EncounterState): boolean {
   return true;
 }
 
+export function swapHeroPositions(state: EncounterState, firstSlot: number, secondSlot: number): boolean {
+  if (state.phase !== 'preparation' || firstSlot === secondSlot) return false;
+  const first = state.heroes.find(hero => hero.slot === firstSlot);
+  const second = state.heroes.find(hero => hero.slot === secondSlot);
+  if (!first || !second) return false;
+  first.slot = secondSlot;
+  second.slot = firstSlot;
+  state.heroes.sort((a, b) => a.slot - b.slot);
+  return true;
+}
+
 export function createEncounter(equipped = true): EncounterState {
   const hero = createActor('hero-1', 'Герой', 'hero', 0, 100);
   if (equipped) hero.items.push({ id: 'blade', name: 'Клинок', damage: 6, cooldownMs: 1000, remainingMs: 1000, targetPolicy: 'front', trigger: 'always' });
@@ -56,15 +68,22 @@ export function createEncounter(equipped = true): EncounterState {
   return createState([hero], [enemy]);
 }
 
-export function chooseHeroTarget(heroes: Combatant[], policy: TargetPolicy): Combatant | undefined {
-  const alive = heroes.filter(actor => actor.status === 'human' || actor.status === 'stopped' || actor.status === 'active');
-  const health = (actor: Combatant): number => actor.status === 'human' ? actor.hp : actor.durability;
-  return [...alive].sort((a, b) => policy === 'lowest' ? health(a) - health(b) || a.slot - b.slot : a.slot - b.slot)[0];
+function reachable(actors: Combatant[], slot: number, reach: Reach): Combatant[] {
+  if (reach === 'far') return actors;
+  if (slot > 1) return [];
+  const front = [...actors].sort((a, b) => a.slot - b.slot)[0];
+  return front ? [front] : [];
 }
 
-export function chooseEnemyTarget(enemies: Combatant[], policy: TargetPolicy): Combatant | undefined {
+export function chooseHeroTarget(heroes: Combatant[], policy: TargetPolicy, slot = 0, reach: Reach = 'far'): Combatant | undefined {
+  const alive = heroes.filter(actor => actor.status === 'human' || actor.status === 'stopped' || actor.status === 'active');
+  const health = (actor: Combatant): number => actor.status === 'human' ? actor.hp : actor.durability;
+  return reachable(alive, slot, reach).sort((a, b) => policy === 'lowest' ? health(a) - health(b) || a.slot - b.slot : a.slot - b.slot)[0];
+}
+
+export function chooseEnemyTarget(enemies: Combatant[], policy: TargetPolicy, slot = 0, reach: Reach = 'far'): Combatant | undefined {
   const alive = enemies.filter(actor => actor.status === 'enemy' && actor.hp > 0);
-  return [...alive].sort((a, b) => policy === 'lowest' ? a.hp - b.hp || a.slot - b.slot : a.slot - b.slot)[0];
+  return reachable(alive, slot, reach).sort((a, b) => policy === 'lowest' ? a.hp - b.hp || a.slot - b.slot : a.slot - b.slot)[0];
 }
 
 function record(state: EncounterState, event: CombatEvent): void {
@@ -129,7 +148,7 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       item.remainingMs = Math.max(0, item.remainingMs - deltaMs);
       if (item.remainingMs > 0) continue;
       if (item.trigger === 'ownerBelowHalf' && (hero.status === 'human' ? hero.hp / hero.maxHp : hero.durability / hero.maxDurability) >= 0.5) continue;
-      const target = chooseEnemyTarget(state.enemies, item.targetPolicy);
+      const target = chooseEnemyTarget(state.enemies, item.targetPolicy, hero.slot, item.reach);
       if (!target) continue;
       const healthBefore = target.hp;
       applyEffect(state, target.id, 'damage', item.damage);
@@ -143,7 +162,7 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     if (enemy.status !== 'enemy' || enemy.attackDamage <= 0) continue;
     enemy.attackRemainingMs = Math.max(0, enemy.attackRemainingMs - deltaMs);
     if (enemy.attackRemainingMs > 0) continue;
-    const target = chooseHeroTarget(state.heroes, enemy.targetPolicy);
+    const target = chooseHeroTarget(state.heroes, enemy.targetPolicy, enemy.slot, enemy.reach);
     if (!target) continue;
     const isDoll = target.status === 'stopped' || target.status === 'active';
     const healthBefore = isDoll ? target.durability : target.hp;

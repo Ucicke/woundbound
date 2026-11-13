@@ -1,8 +1,8 @@
 // Browser tracer: drive the real preparation UI, then observe its rendered combat log.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { createServer } from 'node:net';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -87,7 +87,14 @@ try {
   browser?.kill();
   vite.kill();
   // Chrome may release its profile asynchronously, so a locked temp file is not fatal.
+  const tempRoot = realpathSync(tmpdir());
   for (let i = 0; i < 10; i++) {
-    try { rmSync(profile, { recursive: true, force: true }); break; } catch { await pause(100); }
+    try {
+      if (!existsSync(profile)) break;
+      const resolvedProfile = realpathSync(profile);
+      if (!resolvedProfile.startsWith(`${tempRoot}${sep}woundbound-tracer-`)) throw new Error('Unexpected browser profile path');
+      rmSync(resolvedProfile, { recursive: true, force: true });
+      break;
+    } catch { await pause(100); }
   }
 }
