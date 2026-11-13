@@ -9,7 +9,7 @@ export function createFullEncounter(): EncounterState {
     return hero;
   });
   const enemies = ['Чумная крыса', 'Культист', 'Чумная крыса', 'Культист'].map((name, slot) => {
-    const enemy = createActor(`enemy-${slot + 1}`, name, 'enemy', slot, 75, slot % 2 ? 'lowest' : 'front');
+    const enemy = createActor(`enemy-${slot + 1}`, name, 'enemy', slot, 100, slot % 2 ? 'lowest' : 'front');
     enemy.attackDamage = slot % 2 ? 7 : 6;
     enemy.attackCooldownMs = 1500 + slot * 150;
     enemy.attackRemainingMs = enemy.attackCooldownMs;

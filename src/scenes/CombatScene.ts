@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { createFullEncounter } from '../combat/encounter.ts';
-import { advanceClock, queueWinding, stepEncounter, type CombatClock } from '../combat/simulation.ts';
+import { advanceClock, chooseEnemyTarget, chooseHeroTarget, projectAction, projectHero, queueWinding, stepEncounter, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
 
 export class CombatScene extends Phaser.Scene {
@@ -11,17 +11,25 @@ export class CombatScene extends Phaser.Scene {
   private heroLabels: Phaser.GameObjects.Text[] = [];
   private enemyLabels: Phaser.GameObjects.Text[] = [];
   private log!: Phaser.GameObjects.Text;
+  private floorText!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
+  private logOffset = 0;
+  private lastAction?: CombatEvent;
+  private flashUntil = 0;
   private onBlur = (): void => { this.focused = false; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onFocus = (): void => { this.focused = true; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onVisibility = (): void => { this.clock.accumulator = 0; this.clock.interrupted = true; };
+  private onWheel = (_pointer: Phaser.Input.Pointer, _objects: Phaser.GameObjects.GameObject[], _dx: number, dy: number): void => {
+    this.logOffset = Phaser.Math.Clamp(this.logOffset + (dy < 0 ? 1 : -1), 0, Math.max(0, this.state.events.length - 7));
+  };
 
   constructor() { super('combat'); }
 
   create(): void {
+    this.focused = document.hasFocus();
     this.graphics = this.add.graphics();
     this.add.text(28, 18, 'WOUNDBOUND', { fontFamily: 'Georgia', fontSize: '28px', color: '#ead9b6' });
-    this.add.text(30, 53, 'ОТРЯД', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
+    this.add.text(30, 53, 'ОТРЯД   ·   П — прочность   З — завод', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
     this.add.text(568, 53, 'ВРАГИ', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
     this.statusText = this.add.text(780, 25, '', { fontFamily: 'Arial', fontSize: '16px', color: '#e8bd72' });
     for (let i = 0; i < 4; i++) {
@@ -29,8 +37,10 @@ export class CombatScene extends Phaser.Scene {
       this.enemyLabels.push(this.add.text(583, 83 + i * 88, '', { fontFamily: 'Arial', fontSize: '15px', color: '#f0e4cc', lineSpacing: 3 }));
       this.add.zone(203, 114 + i * 88, 350, 76).setInteractive({ useHandCursor: true }).on('pointerdown', () => queueWinding(this.state, this.state.heroes[i].id));
     }
-    this.add.text(30, 455, 'ЖУРНАЛ БОЯ', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
+    this.add.text(30, 455, 'ЖУРНАЛ БОЯ  ·  колесо мыши — прокрутка', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
     this.log = this.add.text(30, 481, '', { fontFamily: 'Arial', fontSize: '15px', color: '#ded0b8', lineSpacing: 4 });
+    this.floorText = this.add.text(30, 640, '', { fontFamily: 'Arial', fontSize: '14px', color: '#bca98d' });
+    this.input.on('wheel', this.onWheel);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('focus', this.onFocus);
     document.addEventListener('visibilitychange', this.onVisibility);
@@ -38,6 +48,7 @@ export class CombatScene extends Phaser.Scene {
       window.removeEventListener('blur', this.onBlur);
       window.removeEventListener('focus', this.onFocus);
       document.removeEventListener('visibilitychange', this.onVisibility);
+      this.input.off('wheel', this.onWheel);
     });
   }
 
@@ -45,7 +56,7 @@ export class CombatScene extends Phaser.Scene {
     const visible = !document.hidden;
     const steps = advanceClock(this.clock, delta, visible, this.focused);
     for (let n = 0; n < steps; n++) stepEncounter(this.state, 50);
-    this.statusText.setText(!visible || !this.focused ? 'ПАУЗА' : 'БОЙ');
+    this.statusText.setText(this.state.outcome === 'victory' ? 'ПОБЕДА' : this.state.outcome === 'defeat' ? 'ПОРАЖЕНИЕ' : !visible || !this.focused ? 'ПАУЗА' : 'БОЙ');
     this.renderBoard();
   }
 
@@ -55,12 +66,14 @@ export class CombatScene extends Phaser.Scene {
       const y = 76 + i * 88;
       this.graphics.fillStyle(0x302923).fillRoundedRect(28, y, 350, 76, 6);
       const item = hero.items[0];
-      const progress = item ? 1 - item.remainingMs / item.cooldownMs : 0;
+      const view = projectHero(hero);
+      const progress = item ? 1 - view.cooldownMs / item.cooldownMs : 0;
       let status = `HP ${Math.ceil(hero.hp)}/${hero.maxHp}`;
-      if (hero.status === 'rebirthing') status = `ПЕРЕРОЖДЕНИЕ ${(hero.rebirthMs / 1000).toFixed(1)} с`;
+      if (hero.status === 'rebirthing') status = `ПЕРЕРОЖДЕНИЕ ${view.rebirthSeconds.toFixed(1)} с`;
       if (hero.status === 'stopped' || hero.status === 'active') status = `КУКЛА ${hero.status === 'stopped' ? '— НАЖИМАЙТЕ' : '— РАБОТАЕТ'}  П ${Math.ceil(hero.durability)}  З ${Math.ceil(hero.wind)}`;
       if (hero.status === 'dead') status = 'ОКОНЧАТЕЛЬНАЯ ГИБЕЛЬ';
-      this.heroLabels[i].setText([`${i + 1}. ${hero.name}  ${status}`, item ? `${item.name}  ${(item.remainingMs / 1000).toFixed(1)} с` : 'Без предмета']);
+      const target = item && (hero.status === 'human' || hero.status === 'active') ? chooseEnemyTarget(this.state.enemies, item.targetPolicy) : undefined;
+      this.heroLabels[i].setText([`${i + 1}. ${hero.name}  ${status}`, item ? `${item.name} ${(view.cooldownMs / 1000).toFixed(1)} с → ${target?.name ?? 'нет цели'}` : 'Без предмета']);
       this.graphics.fillStyle(0x655037).fillRect(43, y + 48, 300, 4);
       this.graphics.fillStyle(0xc2a56d).fillRect(43, y + 48, Math.max(0, 300 * progress), 4);
       if (hero.status === 'rebirthing') {
@@ -76,8 +89,28 @@ export class CombatScene extends Phaser.Scene {
     this.state.enemies.forEach((enemy, i) => {
       const y = 76 + i * 88;
       this.graphics.fillStyle(0x352424).fillRoundedRect(568, y, 350, 76, 6);
-      this.enemyLabels[i].setText([`${i + 1}. ${enemy.name}  HP ${Math.ceil(enemy.hp)}/${enemy.maxHp}`, enemy.status === 'dead' ? 'Побеждён' : `Цель: ${enemy.targetPolicy === 'front' ? 'ближний' : 'слабейший'}`]);
+      this.enemyLabels[i].setText([`${i + 1}. ${enemy.name}  HP ${Math.ceil(enemy.hp)}/${enemy.maxHp}`, enemy.status === 'dead' ? 'Побеждён' : `Цель: ${chooseHeroTarget(this.state.heroes, enemy.targetPolicy)?.name ?? 'нет цели'}`]);
     });
-    this.log.setText(this.state.events.slice(-7).map(event => event.message));
+    const latest = [...this.state.events].reverse().find(event => event.kind === 'item' || event.kind === 'enemy');
+    if (latest && latest !== this.lastAction) { this.lastAction = latest; this.flashUntil = this.time.now + 500; }
+    if (this.lastAction && this.time.now < this.flashUntil) {
+      const action = projectAction(this.lastAction);
+      const heroSource = this.state.heroes.findIndex(hero => hero.id === action.actorId);
+      const enemySource = this.state.enemies.findIndex(enemy => enemy.id === action.actorId);
+      const heroTarget = this.state.heroes.findIndex(hero => hero.id === action.targetId);
+      const enemyTarget = this.state.enemies.findIndex(enemy => enemy.id === action.targetId);
+      this.graphics.lineStyle(2, 0xe7bf77, 0.9);
+      if (heroSource >= 0 && enemyTarget >= 0) {
+        this.graphics.strokeRoundedRect(40, 100 + heroSource * 88, 310, 25, 3);
+        this.graphics.lineBetween(378, 114 + heroSource * 88, 568, 114 + enemyTarget * 88);
+      } else if (enemySource >= 0 && heroTarget >= 0) {
+        this.graphics.strokeRoundedRect(568, 76 + enemySource * 88, 350, 76, 6);
+        this.graphics.lineBetween(568, 114 + enemySource * 88, 378, 114 + heroTarget * 88);
+      }
+    }
+    const end = Math.max(0, this.state.events.length - this.logOffset);
+    this.log.setText(this.state.events.slice(Math.max(0, end - 7), end).map(event => projectAction(event).text));
+    const floorItems = this.state.floor.map(id => this.state.heroes.flatMap(hero => hero.items).find(item => item.id === id)?.name ?? id);
+    this.floorText.setText(floorItems.length ? `На полу: ${floorItems.join(', ')}` : '');
   }
 }
