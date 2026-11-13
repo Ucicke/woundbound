@@ -2,7 +2,7 @@ import { COMBAT_CONFIG } from './config.ts';
 
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest';
-export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf' }
+export interface CombatItem { id: string; name: string; damage: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf'; cell?: number }
 export interface Combatant {
   id: string; name: string; side: 'hero' | 'enemy'; slot: number;
   hp: number; maxHp: number; status: ActorStatus; items: CombatItem[];
@@ -10,7 +10,7 @@ export interface Combatant {
   durability: number; maxDurability: number; wind: number; maxWind: number; rebirthMs: number;
 }
 export interface CombatEvent { kind: 'item' | 'enemy' | 'state'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string }
-export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; floor: string[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[] }
+export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; floor: string[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[] }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
@@ -18,7 +18,34 @@ export function createActor(id: string, name: string, side: 'hero' | 'enemy', sl
 }
 
 export function createState(heroes: Combatant[], enemies: Combatant[]): EncounterState {
-  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], floor: [], outcome: 'ongoing', commands: [] };
+  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [] };
+}
+
+/** Prepare a fresh encounter without discarding item identities or cooldowns. */
+export function prepareEncounter(state: EncounterState): void {
+  state.phase = 'preparation';
+  for (const hero of state.heroes) hero.items.forEach((item, index) => { item.cell = index; });
+  const first = state.heroes[0]?.items.shift();
+  if (first) { delete first.cell; state.stash.push(first); }
+  state.item = state.heroes[0]?.items[0] ?? null;
+}
+
+export function placeStashItem(state: EncounterState, itemId: string, heroId: string, cell: number): boolean {
+  if (state.phase !== 'preparation' || !Number.isInteger(cell) || cell < 0 || cell >= 16) return false;
+  const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
+  const itemIndex = state.stash.findIndex(candidate => candidate.id === itemId);
+  if (!hero || itemIndex < 0 || hero.items.some(item => item.cell === cell)) return false;
+  const [item] = state.stash.splice(itemIndex, 1);
+  item.cell = cell;
+  hero.items.push(item);
+  state.item = state.heroes[0]?.items[0] ?? null;
+  return true;
+}
+
+export function startBattle(state: EncounterState): boolean {
+  if (state.phase !== 'preparation' || state.outcome !== 'ongoing') return false;
+  state.phase = 'combat';
+  return true;
 }
 
 export function createEncounter(equipped = true): EncounterState {
@@ -49,11 +76,11 @@ function resolveOutcome(state: EncounterState): void {
   if (state.outcome !== 'ongoing') return;
   if (state.enemies.length > 0 && state.enemies.every(enemy => enemy.status === 'dead')) state.outcome = 'victory';
   else if (state.heroes.length > 0 && state.heroes.every(hero => hero.status === 'dead')) state.outcome = 'defeat';
-  if (state.outcome !== 'ongoing') state.commands.length = 0;
+  if (state.outcome !== 'ongoing') { state.commands.length = 0; state.phase = 'result'; }
 }
 
 export function queueWinding(state: EncounterState, actorId: string): void {
-  if (state.outcome === 'ongoing') state.commands.push(actorId);
+  if (state.phase === 'combat' && state.outcome === 'ongoing') state.commands.push(actorId);
 }
 
 export function applyEffect(state: EncounterState, targetId: string, kind: 'damage' | 'heal' | 'poison' | 'bleeding' | 'fear', amount: number): boolean {
@@ -86,7 +113,7 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
 }
 
 export function stepEncounter(state: EncounterState, deltaMs: number): void {
-  if (state.outcome !== 'ongoing') return;
+  if (state.phase !== 'combat' || state.outcome !== 'ongoing') return;
   for (const hero of state.heroes) {
     if (hero.status === 'rebirthing') {
       hero.rebirthMs = Math.max(0, hero.rebirthMs - deltaMs);

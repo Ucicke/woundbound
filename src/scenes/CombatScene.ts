@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { createFullEncounter } from '../combat/encounter.ts';
-import { advanceClock, chooseEnemyTarget, chooseHeroTarget, projectAction, projectHero, queueWinding, stepEncounter, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
+import { advanceClock, chooseEnemyTarget, chooseHeroTarget, placeStashItem, prepareEncounter, projectAction, projectHero, queueWinding, startBattle, stepEncounter, type CombatClock, type CombatEvent } from '../combat/simulation.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
 
 export class CombatScene extends Phaser.Scene {
@@ -16,6 +16,10 @@ export class CombatScene extends Phaser.Scene {
   private logOffset = 0;
   private lastAction?: CombatEvent;
   private flashUntil = 0;
+  private preparation!: Phaser.GameObjects.Container;
+  private selectedHero = 0;
+  private selectedItem: string | null = null;
+  private preparationMessage = '';
   private onBlur = (): void => { this.focused = false; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onFocus = (): void => { this.focused = true; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onVisibility = (): void => { this.clock.accumulator = 0; this.clock.interrupted = true; };
@@ -27,6 +31,7 @@ export class CombatScene extends Phaser.Scene {
 
   create(): void {
     this.focused = document.hasFocus();
+    prepareEncounter(this.state);
     this.graphics = this.add.graphics();
     this.add.text(28, 18, 'WOUNDBOUND', { fontFamily: 'Georgia', fontSize: '28px', color: '#ead9b6' });
     this.add.text(30, 53, 'ОТРЯД   ·   П — прочность   З — завод', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
@@ -40,6 +45,8 @@ export class CombatScene extends Phaser.Scene {
     this.add.text(30, 455, 'ЖУРНАЛ БОЯ  ·  колесо мыши — прокрутка', { fontFamily: 'Arial', fontSize: '14px', color: '#a8967e' });
     this.log = this.add.text(30, 481, '', { fontFamily: 'Arial', fontSize: '15px', color: '#ded0b8', lineSpacing: 4 });
     this.floorText = this.add.text(30, 640, '', { fontFamily: 'Arial', fontSize: '14px', color: '#bca98d' });
+    this.preparation = this.add.container(0, 0).setDepth(100);
+    this.renderPreparation();
     this.input.on('wheel', this.onWheel);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('focus', this.onFocus);
@@ -50,6 +57,49 @@ export class CombatScene extends Phaser.Scene {
       document.removeEventListener('visibilitychange', this.onVisibility);
       this.input.off('wheel', this.onWheel);
     });
+  }
+
+  private renderPreparation(): void {
+    this.preparation.removeAll(true);
+    if (this.state.phase !== 'preparation') return;
+    const background = this.add.rectangle(480, 340, 960, 680, 0x171414);
+    this.preparation.add(background);
+    const label = (x: number, y: number, value: string, size = '18px'): Phaser.GameObjects.Text => {
+      const result = this.add.text(x, y, value, { fontFamily: 'Arial', fontSize: size, color: '#f0e4cc', wordWrap: { width: 450 } });
+      this.preparation.add(result);
+      return result;
+    };
+    label(36, 25, 'ПОДГОТОВКА', '26px');
+    label(36, 75, 'Отряд', '20px');
+    this.state.heroes.forEach((hero, i) => {
+      const text = label(36, 110 + i * 52, `${i === this.selectedHero ? '▶ ' : ''}${i + 1}. ${hero.name}`);
+      text.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.selectedHero = i; this.renderPreparation(); });
+    });
+    const hero = this.state.heroes[this.selectedHero];
+    label(330, 75, `Рюкзак: ${hero.name}`, '20px');
+    for (let cell = 0; cell < 16; cell++) {
+      const x = 350 + (cell % 4) * 65;
+      const y = 140 + Math.floor(cell / 4) * 65;
+      const occupied = hero.items.find(item => item.cell === cell);
+      const square = this.add.rectangle(x, y, 58, 58, occupied ? 0x665037 : 0x302923).setStrokeStyle(1, 0xa8967e).setInteractive({ useHandCursor: true });
+      this.preparation.add(square);
+      square.on('pointerdown', () => {
+        if (this.selectedItem && placeStashItem(this.state, this.selectedItem, hero.id, cell)) {
+          this.preparationMessage = 'Предмет размещён'; this.selectedItem = null;
+        } else this.preparationMessage = 'Выберите предмет и свободную клетку';
+        this.renderPreparation();
+      });
+      if (occupied) label(x - 23, y - 10, occupied.name.slice(0, 5), '13px');
+    }
+    label(650, 75, 'Запас', '20px');
+    if (this.state.stash.length === 0) label(650, 115, 'Пусто', '16px');
+    this.state.stash.forEach((item, i) => {
+      const text = label(650, 115 + i * 42, `${this.selectedItem === item.id ? '▶ ' : ''}${item.name}`, '16px');
+      text.setInteractive({ useHandCursor: true }).on('pointerdown', () => { this.selectedItem = item.id; this.preparationMessage = 'Выберите клетку рюкзака'; this.renderPreparation(); });
+    });
+    label(330, 425, this.preparationMessage, '16px');
+    const start = label(330, 490, '▶  Начать бой', '24px').setInteractive({ useHandCursor: true });
+    start.on('pointerdown', () => { if (startBattle(this.state)) this.renderPreparation(); });
   }
 
   update(_time: number, delta: number): void {
