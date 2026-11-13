@@ -1,0 +1,36 @@
+:root { color-scheme: dark; font-family: Arial, sans-serif; color: #f0e4cc; background: #171414; font-size: 16px; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+#game { position: fixed; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+#game-ui { max-width: 1440px; margin: 0 auto; padding: 24px; }
+h1, h2, h3, p { margin: 0 0 12px; }
+h1 { font-size: 28px; } h2 { font-size: 20px; } h3 { font-size: 18px; }
+p, small { line-height: 1.5; } small { font-size: 14px; }
+button { font: inherit; color: inherit; background: #3a312a; border: 1px solid #8a765a; border-radius: 5px; min-height: 44px; padding: 8px 12px; cursor: pointer; }
+button:hover { background: #514132; } button:focus-visible, summary:focus-visible, .history-list:focus-visible { outline: 3px solid #f7d999; outline-offset: 2px; }
+button.primary { background: #e8bd72; color: #171414; font-weight: 700; border-color: #f7d999; } button.danger { border-color: #cf6c61; }
+.screen-head { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 24px; }
+.screen-head h1 { margin: 0; } .eyebrow { color: #d6c8b2; font-size: 14px; letter-spacing: .08em; }
+.preparation { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(270px, 2fr) minmax(200px, 1fr); gap: 16px; align-items: start; }
+.panel, .history, .combatant { background: #302923; border: 1px solid #665847; border-radius: 8px; padding: 16px; }
+.hero-list, .stash, .combatants { display: grid; gap: 8px; } .hero-list { margin-bottom: 16px; }
+.hero-choice, .stash-item { text-align: left; } .hero-choice span { display: inline-block; margin-right: 8px; color: #e8bd72; }
+.selected { border-color: #f4ce87; box-shadow: inset 0 0 0 2px #e8bd72; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.cell { aspect-ratio: 1; min-width: 0; min-height: 52px; overflow-wrap: anywhere; font-size: 14px; }
+.cell.occupied { background: #665037; } .cell.related { border: 3px solid #e8bd72; }
+.bonuses { padding-left: 20px; color: #f4ce87; } .message { min-height: 24px; margin-top: 12px; }
+.details { border-top: 1px solid #665847; padding-top: 12px; } .muted { color: #d6c8b2; }
+.battle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.combatant-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; } .combatant-title h3 { margin: 0; }
+.state { color: #e8bd72; font-size: 14px; } .combatant.rebirthing { border-style: dashed; } .combatant.stopped { border: 2px solid #e8bd72; } .combatant.active { border-left: 6px double #e8bd72; } .combatant.dead { opacity: .75; border-style: dotted; }
+.combatant.action-source { box-shadow: 0 0 0 2px #e8bd72; } .combatant.action-target { box-shadow: 0 0 0 2px #d87f73; }
+.action-cue { min-height: 24px; color: #f4ce87; }
+.meter { margin-top: 8px; } .meter span, .equipped > div { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
+progress { display: block; width: 100%; height: 10px; margin: 4px 0; accent-color: #e8bd72; } progress.health, progress.durability { accent-color: #cf6c61; } progress.rebirth { accent-color: #b9a7d6; }
+.equipped { border-top: 1px solid #665847; margin-top: 10px; padding-top: 8px; } .equipped small { color: #d6c8b2; } details { margin-top: 4px; font-size: 14px; } summary { cursor: pointer; }
+.wind-button { margin-top: 12px; width: 100%; background: #745638; font-weight: bold; }
+.history { margin-top: 24px; } .history-list { height: 280px; overflow-y: scroll; white-space: pre-wrap; line-height: 1.6; scrollbar-color: #d4ad70 #211b18; scrollbar-width: auto; }
+.outcome, .confirmation { border: 2px solid #e8bd72; background: #302923; padding: 24px; text-align: center; margin-bottom: 24px; } .outcome h1 { font-size: 32px; } .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.outcome, .confirmation { position: sticky; top: 8px; z-index: 2; }
+@media (max-width: 800px) { #game-ui { padding: 16px; } .preparation { grid-template-columns: 1fr; } .formation-panel { order: 0; } .stash-panel { order: 1; } .backpack-panel { order: 2; } .cell { aspect-ratio: auto; height: 64px; } .battle-grid { grid-template-columns: 1fr; } .screen-head { align-items: flex-start; } }

@@ -39,6 +39,18 @@ export function moveItem(state: EncounterState, itemId: string, heroId: string, 
   return true;
 }
 
+export function storeItem(state: EncounterState, itemId: string): boolean {
+  if (state.phase !== 'preparation' && !(state.phase === 'result' && state.outcome === 'victory')) return false;
+  const owner = state.heroes.find(hero => hero.status !== 'dead' && hero.items.some(item => item.id === itemId));
+  const index = owner?.items.findIndex(item => item.id === itemId) ?? -1;
+  if (!owner || index < 0) return false;
+  const [item] = owner.items.splice(index, 1);
+  delete item.cell;
+  state.stash.push(item);
+  state.item = state.heroes[0]?.items[0] ?? null;
+  return true;
+}
+
 export function areAdjacent(a: CombatItem, b: CombatItem): boolean {
   const left = occupiedCells(a, a.cell ?? 0) ?? [];
   const right = occupiedCells(b, b.cell ?? 0) ?? [];

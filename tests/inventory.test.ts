@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
-import { itemBonuses, moveItem, occupiedCells } from '../src/combat/inventory.ts';
+import { itemBonuses, moveItem, occupiedCells, storeItem } from '../src/combat/inventory.ts';
 import { applyEffect, prepareEncounter, startBattle, stepEncounter } from '../src/combat/simulation.ts';
 
 describe('inventory ownership and adjacency', () => {
@@ -18,6 +18,11 @@ describe('inventory ownership and adjacency', () => {
     expect(state.heroes[0].items[0]).toBe(item);
     expect(occupiedCells(item, 0)).toEqual([0, 1]);
     expect(moveItem(state, item.id, state.heroes[0].id, 4)).toBe(true);
+    expect(storeItem(state, item.id)).toBe(true);
+    expect(state.stash).toContain(item);
+    expect(state.heroes[0].items).not.toContain(item);
+    startBattle(state);
+    expect(storeItem(state, state.heroes[1].items[0].id)).toBe(false);
   });
 
   it('derives both bonuses only from orthogonal neighbours and recomputes after moving', () => {

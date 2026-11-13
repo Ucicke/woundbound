@@ -30,7 +30,7 @@ async function eventually(fn, message) {
 
 const port = await freePort();
 const profile = mkdtempSync(join(tmpdir(), 'woundbound-tracer-'));
-const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { windowsHide: true, stdio: 'ignore' });
+const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--mode', 'test', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { windowsHide: true, stdio: 'ignore' });
 let browser;
 let socket;
 try {
@@ -58,30 +58,108 @@ try {
   await call('Page.enable');
   await call('Runtime.enable');
   await call('Emulation.setDeviceMetricsOverride', { width: 960, height: 680, deviceScaleFactor: 1, mobile: false });
-  // Phaser text uses canvas fillText. Capture the text actually drawn, rather than
-  // reading or mutating the simulation, so the check exercises the real UI output.
-  await call('Page.addScriptToEvaluateOnNewDocument', { source: `
-    window.__drawnText = [];
-    const original = CanvasRenderingContext2D.prototype.fillText;
-    CanvasRenderingContext2D.prototype.fillText = function(text, ...args) {
-      window.__drawnText.push(String(text));
-      if (window.__drawnText.length > 5000) window.__drawnText.splice(0, 1000);
-      return original.call(this, text, ...args);
-    };
-  ` });
   await call('Page.navigate', { url: `http://127.0.0.1:${port}/` });
-  await eventually(async () => (await call('Runtime.evaluate', { expression: "window.__drawnText?.includes('ПОДГОТОВКА')", returnByValue: true })).result.value, 'Preparation screen was not rendered');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=start]'))", returnByValue: true })).result.value, 'Preparation screen was not rendered');
   await call('Page.bringToFront');
-  const click = async (x, y) => {
+  const click = async selector => {
+    const expression = `(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) return null; element.scrollIntoView({block:'center'}); const r = element.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`;
+    const point = (await call('Runtime.evaluate', { expression, returnByValue: true })).result.value;
+    if (!point) throw new Error(`Missing UI control: ${selector}`);
+    const { x, y } = point;
     await call('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
     await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+    await pause(30);
   };
-  await click(700, 125); // Select the bloodthirsty blade from the stash.
-  await click(350, 140); // Place it in the first cell.
-  await eventually(async () => (await call('Runtime.evaluate', { expression: "window.__drawnText?.includes('Предмет размещён')", returnByValue: true })).result.value, 'The item was not placed through the UI');
-  await click(390, 505); // Start the actual battle.
-  await eventually(async () => (await call('Runtime.evaluate', { expression: "window.__drawnText?.some(x => x.includes('Кровожадный клинок →') && x.includes('урона'))", returnByValue: true })).result.value, 'The equipped blade did not render a target and damage in the combat log');
-  console.log('Browser tracer passed: placed item acted against an actual target.');
+  await click('[data-action="item"][data-value="item-1"]');
+  await click('[data-action="hero"][data-value="hero-2"]');
+  await click('[data-action="cell"][data-value="0"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('не помещается')", returnByValue: true })).result.value, 'Invalid occupied-cell move was not rejected');
+  await click('[data-action="hero"][data-value="hero-1"]');
+  await click('[data-action="cell"][data-value="0"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('Предмет размещён')", returnByValue: true })).result.value, 'The item was not placed through the UI');
+  await click('[data-action="item"][data-value="whetstone-1"]');
+  await click('[data-action="cell"][data-value="1"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.bonuses')?.textContent.includes('+2 урона')", returnByValue: true })).result.value, 'Adjacency bonus was not displayed');
+  await click('[data-action="swap"]');
+  await click('[data-action="hero"][data-value="hero-4"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=hero][data-value=hero-1]')?.textContent.includes('4')", returnByValue: true })).result.value, 'Formation swap did not update the real hero position');
+  await click('[data-action="swap"]');
+  await click('[data-action="hero"][data-value="hero-1"]');
+  await click('[data-action="start"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('#history-list')?.textContent.includes('Кровожадный клинок →')", returnByValue: true })).result.value, 'The equipped blade did not render a target and damage in the combat log');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('.combatant progress.health') && document.querySelector('.equipped progress.cooldown'))", returnByValue: true })).result.value, 'Health and individual cooldown bars are missing');
+  if (!(await call('Runtime.evaluate', { expression: "document.querySelector('.battle-grid section .combatant')?.querySelectorAll('.equipped progress.cooldown').length === 2", returnByValue: true })).result.value) throw new Error('Multiple equipped items do not have separate cooldown bars');
+  await click('[data-action="restart"]');
+  await click('[data-action="cancel-reset"]');
+  if (!(await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('.combatant'))", returnByValue: true })).result.value) throw new Error('Cancel reset did not preserve the battle');
+  await click('[data-action="restart"]');
+  await click('[data-action="confirm-reset"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=start]'))", returnByValue: true })).result.value, 'Confirmed reset did not restore preparation');
+  for (const [width, height, dpr] of [[1280, 720, 1], [375, 812, 1], [375, 812, 2]]) {
+    await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: dpr, mobile: false });
+    const metrics = (await call('Runtime.evaluate', { expression: `(() => { const b = document.querySelector('.cell').getBoundingClientRect(); const c = document.querySelector('canvas').getBoundingClientRect(); return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio,bodyFont:getComputedStyle(document.body).fontSize,cellFont:getComputedStyle(document.querySelector('.cell')).fontSize,cellWidth:b.width,cellHeight:b.height,horizontalOverflow:document.documentElement.scrollWidth>innerWidth,canvasCss:[c.width,c.height],canvasBacking:[document.querySelector('canvas').width,document.querySelector('canvas').height]}; })()`, returnByValue: true })).result.value;
+    if (metrics.horizontalOverflow || metrics.cellWidth < 44 || metrics.cellHeight < 44 || parseFloat(metrics.cellFont) < 14) throw new Error(`Responsive check failed: ${JSON.stringify(metrics)}`);
+    console.log(`Browser metrics: ${JSON.stringify(metrics)}`);
+  }
+  await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=item][data-value=mercy-1]').focus()" });
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await call('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13 });
+  await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=item][data-value=mercy-1].selected'))", returnByValue: true })).result.value, 'Keyboard selection did not select the item');
+  await click('[data-action="cell"][data-value="0"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('Предмет размещён')", returnByValue: true })).result.value, 'Narrow-viewport cell click failed');
+  await call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const touch = async selector => {
+    const expression = `(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return null; e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`;
+    const point = (await call('Runtime.evaluate', { expression, returnByValue: true })).result.value;
+    if (!point) throw new Error(`Missing touch control: ${selector}`);
+    await call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+    await call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await pause(30);
+  };
+  await touch('[data-action="item"][data-value="heart-1"]');
+  await touch('[data-action="cell"][data-value="1"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('[data-action=cell][data-value=\"1\"]')?.textContent.includes('Латунное сердце')", returnByValue: true })).result.value, 'Touch placement failed');
+  await call('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=winding` });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=wind]'))", returnByValue: true })).result.value, 'Stopped doll fixture did not appear');
+  await call('Page.bringToFront');
+  for (let i = 0; i < 20; i++) await click('[data-action="wind"][data-value="hero-1"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.combatant.active')?.textContent.includes('Кукла работает')", returnByValue: true })).result.value, 'Twenty browser clicks did not activate the doll');
+  const otherTarget = await (await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' })).json();
+  const otherSocket = new WebSocket(otherTarget.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => { otherSocket.onopen = resolve; otherSocket.onerror = reject; });
+  const focusOther = new Promise((resolve, reject) => {
+    otherSocket.onmessage = event => { const reply = JSON.parse(event.data); if (reply.id === 1) reply.error ? reject(new Error(reply.error.message)) : resolve(); };
+    otherSocket.send(JSON.stringify({ id: 1, method: 'Page.bringToFront' }));
+  });
+  await focusOther;
+  await pause(200);
+  const hidden = (await call('Runtime.evaluate', { expression: 'document.hidden', returnByValue: true })).result.value;
+  if (hidden) {
+    const windBefore = (await call('Runtime.evaluate', { expression: "document.querySelector('.combatant.active progress.wind')?.value", returnByValue: true })).result.value;
+    await pause(3500);
+    await call('Page.bringToFront');
+    await pause(200);
+    const windAfter = (await call('Runtime.evaluate', { expression: "document.querySelector('.combatant.active progress.wind')?.value", returnByValue: true })).result.value;
+    if (typeof windBefore !== 'number' || typeof windAfter !== 'number' || windBefore - windAfter > 3) throw new Error(`Combat caught up while hidden: wind ${windBefore} -> ${windAfter}`);
+    console.log(`Visibility pause passed: wind ${windBefore} -> ${windAfter} after 3.5s hidden.`);
+  } else {
+    console.log('Visibility pause not verified: browser did not report the background tab as hidden.');
+    await call('Page.bringToFront');
+  }
+  otherSocket.close();
+  await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=drop` });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.outcome')?.textContent.includes('Победа')", returnByValue: true })).result.value, 'Controlled victory did not appear');
+  await click('[data-action="manage"]');
+  await click('[data-action="hero"][data-value="hero-2"]');
+  await click('[data-action="item"][data-value="item-1"]');
+  await click('[data-action="cell"][data-value="1"]');
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.message')?.textContent.includes('Предмет размещён') && !document.querySelector('[data-action=item][data-value=\"item-1\"]')", returnByValue: true })).result.value, 'Dropped item did not move to a surviving hero');
+  await call('Page.navigate', { url: `http://127.0.0.1:${port}/?scenario=defeat` });
+  await eventually(async () => (await call('Runtime.evaluate', { expression: "document.querySelector('.outcome')?.textContent.includes('Поражение')", returnByValue: true })).result.value, 'Controlled defeat did not appear');
+  if ((await call('Runtime.evaluate', { expression: "Boolean(document.querySelector('[data-action=manage]'))", returnByValue: true })).result.value) throw new Error('Defeat incorrectly allowed distribution');
+  console.log('Browser tracer passed: placement, rejection, swap, action, bars, reset, responsive layout, winding, defeat and post-victory transfer.');
 } finally {
   socket?.close();
   browser?.kill();
