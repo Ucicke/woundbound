@@ -1,10 +1,11 @@
 /// <reference types="vite/client" />
 import { createFullEncounter } from '../combat/encounter.ts';
 import { areAdjacent, canPlaceItem, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../combat/inventory.ts';
-import { applyEffect, prepareEncounter, queueWinding, startBattle, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { applyEffect, HERO_ITEM_AFFINITIES, prepareEncounter, queueWinding, startBattle, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { beginRun, calmWorkshopItem, claimReward, createRun, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop, type RunState } from '../combat/run.ts';
 import { ITEM_CATEGORY_LABELS, ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ItemDialogue } from '../presentation/itemDialogue.ts';
+import { COMBAT_CONFIG } from '../combat/config.ts';
 
 /** Game state and player commands. Phaser renders this model; this class has no DOM dependency. */
 export class GameUI {
@@ -109,27 +110,29 @@ export class GameUI {
   get dialogOpen(): boolean { return this.confirmReset; }
 
   itemDescription(item: CombatItem, hero?: Combatant): string {
-    const bonuses = hero ? itemBonuses(item, hero.items) : { damage: 0, cooldownFactor: 1, healing: 0, wind: 0, descriptions: [] };
+    const ownerAffinity = hero ? HERO_ITEM_AFFINITIES[hero.slot] : undefined;
+    const nativeFactor = item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
+    const bonuses = hero ? itemBonuses(item, hero.items, ownerAffinity) : { damage: 0, cooldownFactor: 1, healing: 0, wind: 0, descriptions: [] };
     const identity = item.classAffinity && item.category
-      ? `Тема: ${ITEM_CLASS_LABELS[item.classAffinity]} · тип: ${ITEM_CATEGORY_LABELS[item.category].toLowerCase()}. `
+      ? `Тема: ${ITEM_CLASS_LABELS[item.classAffinity]} · тип: ${ITEM_CATEGORY_LABELS[item.category].toLowerCase()}. Родное снаряжение усиливает эффект на ${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}%. `
       : '';
     if (item.trigger === 'passive' || item.effect === 'passive') {
       const passive = item.passiveBonuses;
       const stats = [
-        ...(passive?.armor ? [`Броня: −${passive.armor} урона за удар`] : []),
-        ...(passive?.damage ? [`Урон вещей: +${passive.damage}`] : []),
-        ...(passive?.healing ? [`Лечение: +${passive.healing}`] : []),
-        ...(passive?.wind ? [`Подзавод: +${passive.wind}`] : []),
+        ...(passive?.armor ? [`Броня: −${Math.round(passive.armor * nativeFactor)} урона за удар`] : []),
+        ...(passive?.damage ? [`Урон вещей: +${Math.round(passive.damage * nativeFactor)}`] : []),
+        ...(passive?.healing ? [`Лечение: +${Math.round(passive.healing * nativeFactor)}`] : []),
+        ...(passive?.wind ? [`Подзавод: +${Math.round(passive.wind * nativeFactor)}`] : []),
         ...(passive?.cooldownFactor ? [`Кулдаун: −${Math.round((1 - passive.cooldownFactor) * 100)}%`] : []),
       ];
       return `${identity}${item.description ?? 'Пассивное свойство.'} ${stats.join('; ')}.`;
     }
     const cooldown = item.cooldownMs * bonuses.cooldownFactor / 1000;
     const amount = item.effect === 'wind'
-      ? `Подзавод: ${(item.windAmount ?? item.damage) + bonuses.wind}.`
+      ? `Подзавод: ${Math.round(((item.windAmount ?? item.damage) + bonuses.wind) * nativeFactor)}.`
       : item.effect === 'heal'
-        ? `Лечение: ${item.damage + bonuses.healing}.`
-        : `Урон: ${item.damage + bonuses.damage}.`;
+        ? `Лечение: ${Math.round((item.damage + bonuses.healing) * nativeFactor)}.`
+        : `Урон: ${Math.round((item.damage + bonuses.damage) * nativeFactor)}.`;
     const reach = (!item.effect || item.effect === 'damage') && item.reach === 'near' ? ' Владелец сам приближается к переднему врагу.' : '';
     return `${identity}${item.description ?? 'Автоматическое действие.'}${item.calmed ? ' Предмет успокоен.' : ''} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${bonuses.cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}`;
   }

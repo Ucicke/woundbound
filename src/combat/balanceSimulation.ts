@@ -1,7 +1,8 @@
 import { createFullEncounter } from './encounter.ts';
+import { COMBAT_CONFIG } from './config.ts';
 import { areAdjacent, canPlaceItem, itemBonuses, moveItem, storeItem } from './inventory.ts';
 import { createRun, beginRun, claimReward, enterRoom, nextRoomChoices, openRoute, syncRun } from './run.ts';
-import { prepareEncounter, queueWinding, startBattle, stepEncounter, type CombatItem, type EncounterState } from './simulation.ts';
+import { HERO_ITEM_AFFINITIES, prepareEncounter, queueWinding, startBattle, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
 
 export type BalanceAgent = 'random' | 'synergy' | 'balanced';
 export type BalanceOutcome = 'victory' | 'defeat' | 'timeout';
@@ -28,7 +29,7 @@ export interface BalanceRunResult {
 const FRAME_MS = 100;
 const MAX_BATTLE_MS = 240_000;
 const WIND_CLICK_INTERVAL_MS = 200;
-const HERO_CLASSES = ['guard', 'huntress', 'pilgrim', 'clockmaker'] as const;
+const HERO_CLASSES = HERO_ITEM_AFFINITIES;
 
 interface PlacementOption {
   heroId: string;
@@ -65,40 +66,42 @@ function triggerWeight(item: CombatItem): number {
 }
 
 function effectWeight(item: CombatItem): number {
-  if (item.effect === 'heal') return 0.34;
-  if (item.effect === 'wind') return 0.48;
+  if (item.effect === 'heal') return 0.9;
+  if (item.effect === 'wind') return 0.9;
   if (item.effect === 'passive' || item.trigger === 'passive') return 0;
   return 1;
 }
 
 /** Rough expected combat value used only by the simulated agents' loot policy. */
-function loadoutPower(items: CombatItem[]): number {
-  const armor = Math.min(3, items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0), 0));
-  let score = armor * 3.5;
+function loadoutPower(items: CombatItem[], affinity?: ItemClassAffinity): number {
+  const nativeFactor = (item: CombatItem): number => item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
+  const armor = Math.min(3, Math.round(items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * nativeFactor(item), 0)));
+  // Armor is unusually valuable in a long idle fight: it reduces every incoming hit.
+  let score = armor * 20;
   for (const item of items) {
     if (item.effect === 'passive' || item.trigger === 'passive') continue;
-    const bonus = itemBonuses(item, items);
+    const bonus = itemBonuses(item, items, affinity);
     const cooldown = Math.max(300, item.cooldownMs * bonus.cooldownFactor);
     const amount = item.effect === 'wind' ? (item.windAmount ?? item.damage) + bonus.wind : item.damage + bonus.damage;
-    score += amount * 1000 / cooldown * triggerWeight(item) * effectWeight(item);
+    score += amount * nativeFactor(item) * 1000 / cooldown * triggerWeight(item) * effectWeight(item);
   }
   return score;
 }
 
-function singleItemValue(item: CombatItem): number {
-  return loadoutPower([item]) + (item.rarityMultiplier ?? 1) * 0.01;
+function singleItemValue(item: CombatItem, affinity?: ItemClassAffinity): number {
+  return loadoutPower([item], affinity) + (item.rarityMultiplier ?? 1) * 0.01;
 }
 
 function placementOptions(state: EncounterState, item: CombatItem): PlacementOption[] {
   const options: PlacementOption[] = [];
   const previousCell = item.cell;
   const previousRotation = item.rotation;
-  const partyPower = state.heroes.reduce((sum, hero) => sum + loadoutPower(hero.items), 0);
+  const partyPower = state.heroes.reduce((sum, hero) => sum + loadoutPower(hero.items, HERO_CLASSES[hero.slot]), 0);
   const partyMean = Math.max(1, partyPower / Math.max(1, state.heroes.filter(hero => hero.status !== 'dead').length));
 
   for (const hero of state.heroes) {
     if (hero.status === 'dead') continue;
-    const before = loadoutPower(hero.items);
+    const before = loadoutPower(hero.items, HERO_CLASSES[hero.slot]);
     for (let rotation = 0; rotation < 4; rotation++) {
       if (rotation === 0) delete item.rotation;
       else item.rotation = rotation;
@@ -113,9 +116,9 @@ function placementOptions(state: EncounterState, item: CombatItem): PlacementOpt
           continue;
         }
         firstFit = false;
-        const gain = Math.max(0, loadoutPower(hero.items) - before);
+        const gain = Math.max(0, loadoutPower(hero.items, HERO_CLASSES[hero.slot]) - before);
         hero.items.pop();
-        const affinity = item.classAffinity === HERO_CLASSES[hero.slot] ? singleItemValue(item) * 0.08 : 0;
+        const affinity = item.classAffinity === HERO_CLASSES[hero.slot] ? singleItemValue(item) * 0.25 : 0;
         const synergyScore = gain + affinity;
         const fairness = Math.max(0.72, Math.min(1.28, 1 + (partyMean - before) / partyMean * 0.35));
         options.push({ heroId: hero.id, cell, rotation, synergyScore, balancedScore: synergyScore * fairness });
@@ -146,17 +149,8 @@ function shuffle<T>(items: T[], random: () => number): T[] {
 function rebuildGear(state: EncounterState, agent: BalanceAgent, random: () => number, randomizeStarterGear = false): void {
   if (agent !== 'synergy') {
     if (agent === 'random' && randomizeStarterGear) {
-      for (const hero of state.heroes) for (const item of [...hero.items]) storeItem(state, item.id);
-    }
-    if (agent === 'balanced' && randomizeStarterGear) {
-      for (const hero of state.heroes) {
-        const affinity = HERO_CLASSES[hero.slot];
-        const keep = [...hero.items]
-          .sort((a, b) => balancedItemValue(b, affinity) - balancedItemValue(a, affinity))
-          .slice(0, 5);
-        const keepIds = new Set(keep.map(item => item.id));
-        for (const item of [...hero.items]) if (!keepIds.has(item.id)) storeItem(state, item.id);
-      }
+      // Keep the generated class signature item; randomly redistribute the rest of each full starter pack.
+      for (const hero of state.heroes) for (const item of [...hero.items.slice(1)]) storeItem(state, item.id);
     }
     const looseItems = shuffle([...state.stash, ...state.floor], random);
     for (const item of looseItems) {
@@ -176,28 +170,36 @@ function rebuildGear(state: EncounterState, agent: BalanceAgent, random: () => n
   }
 }
 
-function balancedItemValue(item: CombatItem, affinity: string): number {
-  return singleItemValue(item) * (item.classAffinity === affinity ? 1.12 : 1);
-}
-
-/** The middle policy recognizes useful gear and class affinity but does not optimize adjacency. */
+/** The middle policy favors useful items and weaker owners but does not optimize adjacency. */
 function placeBalanced(state: EncounterState, item: CombatItem, random: () => number): boolean {
-  const eligible = state.heroes.filter(hero => hero.status !== 'dead' && hero.items.length < 12);
-  const matching = eligible.filter(hero => item.classAffinity === HERO_CLASSES[hero.slot]);
-  const candidates = matching.length ? matching : eligible;
-  const ranked = shuffle([...candidates], random).sort((a, b) => {
-    const affinity = Number(item.classAffinity === HERO_CLASSES[b.slot]) - Number(item.classAffinity === HERO_CLASSES[a.slot]);
-    if (affinity) return affinity;
-    return loadoutPower(a.items) - loadoutPower(b.items);
-  });
+  const allLiving = state.heroes.filter(hero => hero.status !== 'dead');
+  const matching = allLiving.filter(hero => item.classAffinity === HERO_CLASSES[hero.slot]);
+  const candidates = matching.length ? matching : allLiving;
+  const ranked = shuffle([...candidates], random).sort((a, b) =>
+    loadoutPower(a.items, HERO_CLASSES[a.slot]) - loadoutPower(b.items, HERO_CLASSES[b.slot]));
   const rotations = shuffle([0, 1, 2, 3], random);
   const cells = shuffle(Array.from({ length: 36 }, (_, cell) => cell), random);
-  for (const hero of ranked) for (const rotation of rotations) {
-    if (rotation === 0) delete item.rotation;
-    else item.rotation = rotation;
-    for (const cell of cells) if (canPlaceItem(state, item, hero.id, cell)) {
-      return moveItem(state, item.id, hero.id, cell);
+  const tryPlace = (hero: EncounterState['heroes'][number]): boolean => {
+    if (hero.items.length >= 10) return false;
+    for (const rotation of rotations) {
+      if (rotation === 0) delete item.rotation;
+      else item.rotation = rotation;
+      for (const cell of cells) if (canPlaceItem(state, item, hero.id, cell)) {
+        if (moveItem(state, item.id, hero.id, cell)) return true;
+      }
     }
+    return false;
+  };
+  for (const hero of ranked) if (tryPlace(hero)) return true;
+
+  // A middle-tier planner upgrades the weakest single item if a reward is clearly better.
+  const upgradeOrder = shuffle([...candidates], random).sort((a, b) =>
+    loadoutPower(a.items, HERO_CLASSES[a.slot]) - loadoutPower(b.items, HERO_CLASSES[b.slot]));
+  for (const hero of upgradeOrder) {
+    const weakest = hero.items.reduce<CombatItem | undefined>((current, other) =>
+      !current || singleItemValue(other, HERO_CLASSES[hero.slot]) < singleItemValue(current, HERO_CLASSES[hero.slot]) ? other : current, undefined);
+    if (!weakest || singleItemValue(item, HERO_CLASSES[hero.slot]) < singleItemValue(weakest, HERO_CLASSES[hero.slot]) * 1.1) continue;
+    if (storeItem(state, weakest.id) && tryPlace(hero)) return true;
   }
   return false;
 }

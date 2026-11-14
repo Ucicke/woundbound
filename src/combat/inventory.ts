@@ -1,4 +1,5 @@
-import type { CombatItem, EncounterState } from './simulation.ts';
+import type { CombatItem, EncounterState, ItemClassAffinity } from './simulation.ts';
+import { COMBAT_CONFIG } from './config.ts';
 
 export type Cell = readonly [number, number];
 /** One inventory geometry contract for rules, pointer math, and Canvas layout. */
@@ -111,16 +112,20 @@ export function areAdjacent(a: CombatItem, b: CombatItem): boolean {
   return left.some(x => right.some(y => Math.abs(inventoryColumn(x) - inventoryColumn(y)) + Math.abs(inventoryRow(x) - inventoryRow(y)) === 1));
 }
 
-export function itemBonuses(item: CombatItem, items: CombatItem[]): { damage: number; cooldownFactor: number; healing: number; wind: number; descriptions: string[] } {
+export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity?: ItemClassAffinity): { damage: number; cooldownFactor: number; healing: number; wind: number; descriptions: string[] } {
   const neighbours = items.filter(other => other.id !== item.id && areAdjacent(item, other));
   const stones = item.tags?.includes('blade') ? neighbours.filter(other => other.tags?.includes('whetstone')).length : 0;
   const springs = item.tags?.includes('clockwork') ? neighbours.filter(other => other.tags?.includes('spring')).length : 0;
   const scopes = item.tags?.includes('firearm') ? neighbours.filter(other => other.tags?.includes('scope')).length : 0;
   const jealous = item.definitionId === 'lantern' && !item.calmed && neighbours.some(other => other.tags?.includes('blade'));
-  const passiveDamage = items.reduce((sum, other) => sum + (other.passiveBonuses?.damage ?? 0), 0);
-  const passiveHealing = items.reduce((sum, other) => sum + (other.passiveBonuses?.healing ?? 0), 0);
-  const passiveWind = items.reduce((sum, other) => sum + (other.passiveBonuses?.wind ?? 0), 0);
-  const passiveCooldown = items.reduce((factor, other) => factor * (other.passiveBonuses?.cooldownFactor ?? 1), 1);
+  const passiveFactor = (other: CombatItem): number => other.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
+  const passiveDamage = items.reduce((sum, other) => sum + (other.passiveBonuses?.damage ?? 0) * passiveFactor(other), 0);
+  const passiveHealing = items.reduce((sum, other) => sum + (other.passiveBonuses?.healing ?? 0) * passiveFactor(other), 0);
+  const passiveWind = items.reduce((sum, other) => sum + (other.passiveBonuses?.wind ?? 0) * passiveFactor(other), 0);
+  const passiveCooldown = items.reduce((factor, other) => {
+    const cooldown = other.passiveBonuses?.cooldownFactor ?? 1;
+    return factor * Math.max(0.5, 1 - (1 - cooldown) * passiveFactor(other));
+  }, 1);
   const adjacencyCooldown = Math.max(0.1, 1 - springs * 0.15) * (jealous ? 1.5 : 1);
   return {
     damage: stones * 2 + scopes * 3 + passiveDamage,

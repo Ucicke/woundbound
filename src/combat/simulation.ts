@@ -8,6 +8,7 @@ export type CombatRole = 'guard' | 'archer' | 'rogue' | 'mage' | 'enemy';
 export type ItemRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
 export type ItemClassAffinity = 'guard' | 'huntress' | 'pilgrim' | 'clockmaker';
 export type ItemCategory = 'weapon' | 'protection' | 'jewelry' | 'relic' | 'tool' | 'consumable' | 'ammo';
+export const HERO_ITEM_AFFINITIES: readonly ItemClassAffinity[] = ['guard', 'huntress', 'pilgrim', 'clockmaker'];
 export interface ItemPassiveBonuses { armor?: number; damage?: number; cooldownFactor?: number; healing?: number; wind?: number }
 export interface CombatItem { id: string; definitionId?: string; name: string; description?: string; rarity?: ItemRarity; rarityMultiplier?: number; classAffinity?: ItemClassAffinity; category?: ItemCategory; passiveBonuses?: ItemPassiveBonuses; damage: number; windAmount?: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf' | 'targetBelowHalf' | 'allyBelowHalf' | 'passive'; cell?: number; rotation?: number; reach?: Reach; shape?: readonly (readonly [number, number])[]; tags?: string[]; effect?: 'damage' | 'heal' | 'wind' | 'passive'; healTarget?: 'self' | 'lowest'; calmed?: boolean }
 export interface Combatant {
@@ -17,7 +18,7 @@ export interface Combatant {
   durability: number; maxDurability: number; wind: number; maxWind: number; rebirthMs: number; isBoss?: boolean; role: CombatRole;
 }
 export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state' | 'wind'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string; defeatedTarget?: boolean; transition?: 'rebirth' | 'permadeath' }
-export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[] }
+export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; bossEnraged: boolean }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
@@ -33,7 +34,7 @@ export function projectRoleIntent(actor: Combatant, target?: Combatant): { lane:
 }
 
 export function createState(heroes: Combatant[], enemies: Combatant[]): EncounterState {
-  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [] };
+  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [], elapsedMs: 0, bossEnraged: false };
 }
 
 /** Prepare a fresh encounter without discarding item identities or cooldowns. */
@@ -150,7 +151,8 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
   if (isDoll && kind !== 'damage') return false;
   if (kind === 'heal') { target.hp = Math.min(target.maxHp, target.hp + Math.max(0, amount)); return true; }
   if (kind !== 'damage') return true;
-  const armor = target.side === 'hero' ? Math.min(3, target.items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0), 0)) : 0;
+  const ownerAffinity = target.side === 'hero' ? HERO_ITEM_AFFINITIES[target.slot] : undefined;
+  const armor = target.side === 'hero' ? Math.min(3, Math.round(target.items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * (item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1), 0))) : 0;
   const damage = Math.max(1, amount - armor);
   if (isDoll) {
     target.durability = Math.max(0, target.durability - damage);
@@ -176,6 +178,12 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
 
 export function stepEncounter(state: EncounterState, deltaMs: number): void {
   if (state.phase !== 'combat' || state.outcome !== 'ongoing') return;
+  state.elapsedMs += deltaMs;
+  const boss = state.enemies.find(enemy => enemy.isBoss);
+  if (boss && !state.bossEnraged && state.elapsedMs >= COMBAT_CONFIG.bossEnrageMs) {
+    state.bossEnraged = true;
+    record(state, { kind: 'state', actorId: boss.id, sourceId: boss.id, sourceName: boss.name, targetId: boss.id, targetName: boss.name, amount: 0, message: `${boss.name} входит в ярость` });
+  }
   for (const hero of state.heroes) {
     if (hero.status === 'rebirthing') {
       hero.rebirthMs = Math.max(0, hero.rebirthMs - deltaMs);
@@ -194,12 +202,12 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       const { target, reason } = evaluateItem(state, hero, item);
       if (!target || reason) continue;
       const healthBefore = target.hp, windBefore = target.wind;
-      const bonuses = itemBonuses(item, hero.items);
+      const bonuses = itemBonuses(item, hero.items, HERO_ITEM_AFFINITIES[hero.slot]);
       const healing = item.effect === 'heal';
       const winding = item.effect === 'wind';
-      const actionAmount = winding ? (item.windAmount ?? item.damage) + bonuses.wind
+      const actionAmount = Math.round((winding ? (item.windAmount ?? item.damage) + bonuses.wind
         : healing ? item.damage + bonuses.healing
-        : item.damage + bonuses.damage;
+        : item.damage + bonuses.damage) * (item.classAffinity === HERO_ITEM_AFFINITIES[hero.slot] ? COMBAT_CONFIG.classAffinityMultiplier : 1));
       applyEffect(state, target.id, winding ? 'wind' : healing ? 'heal' : 'damage', actionAmount);
       const dealt = healing ? target.hp - healthBefore : winding ? target.wind - windBefore : healthBefore - target.hp;
       record(state, { kind: 'item', actorId: hero.id, sourceId: item.id, sourceName: item.name, targetId: target.id, targetName: target.name, amount: dealt,
@@ -217,7 +225,8 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     if (!target) continue;
     const isDoll = target.status === 'stopped' || target.status === 'active';
     const healthBefore = isDoll ? target.durability : target.hp;
-    applyEffect(state, target.id, 'damage', enemy.attackDamage);
+    const attackDamage = enemy.attackDamage + (enemy.isBoss && state.bossEnraged ? COMBAT_CONFIG.bossEnrageDamage : 0);
+    applyEffect(state, target.id, 'damage', attackDamage);
     const dealt = healthBefore - (isDoll ? target.durability : target.hp);
     record(state, { kind: 'enemy', actorId: enemy.id, sourceId: enemy.id, sourceName: enemy.name, targetId: target.id, targetName: target.name, amount: dealt, message: `${enemy.name} → ${target.name}: ${dealt} урона` });
     enemy.attackRemainingMs = enemy.attackCooldownMs;

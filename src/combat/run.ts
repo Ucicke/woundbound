@@ -17,10 +17,11 @@ function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
     const bossTier = Math.floor(roomsAfterOpening / 3);
     const leader = createActor(`room-${room}-boss`, 'Заводной архонт', 'enemy', 0, COMBAT_CONFIG.bossHealth + roomsAfterOpening * COMBAT_CONFIG.bossHealthPerRoom, 'lowest');
     leader.isBoss = true; leader.attackDamage = COMBAT_CONFIG.bossAttackDamage + bossTier;
-    leader.attackCooldownMs = leader.attackRemainingMs = Math.max(1800, COMBAT_CONFIG.enemyAttackCooldownMs + 500 - roomsAfterOpening * COMBAT_CONFIG.enemyAttackCooldownReductionPerRoomMs); leader.reach = 'far';
+    const bossCooldownReduction = COMBAT_CONFIG.enemyAttackCooldownReductionPerRoomMs + COMBAT_CONFIG.bossAttackCooldownBonusReductionPerRoomMs;
+    leader.attackCooldownMs = leader.attackRemainingMs = Math.max(1800, COMBAT_CONFIG.enemyAttackCooldownMs + 500 - roomsAfterOpening * bossCooldownReduction); leader.reach = 'far';
     const guard = createActor(`room-${room}-guard`, 'Сломанный автоматон', 'enemy', 1, COMBAT_CONFIG.bossGuardHealth + roomsAfterOpening * COMBAT_CONFIG.bossGuardHealthPerRoom);
     guard.attackDamage = COMBAT_CONFIG.bossGuardAttackDamage + bossTier;
-    guard.attackCooldownMs = guard.attackRemainingMs = Math.max(1800, COMBAT_CONFIG.enemyAttackCooldownMs + 800 - roomsAfterOpening * COMBAT_CONFIG.enemyAttackCooldownReductionPerRoomMs);
+    guard.attackCooldownMs = guard.attackRemainingMs = Math.max(1800, COMBAT_CONFIG.enemyAttackCooldownMs + 800 - roomsAfterOpening * bossCooldownReduction);
     return [leader, guard];
   }
   const names = ['Чумная крыса', 'Культист', 'Сломанный автоматон'];
@@ -28,9 +29,12 @@ function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
   return Array.from({ length: count }, (_, slot) => {
     const kind = Math.max(0, Math.min(names.length - 1, variant));
     // Health rises every room; damage tiers and faster attacks make later acts pressure the whole party.
-    const health = COMBAT_CONFIG.enemyStartingHealth + (room - 1) * COMBAT_CONFIG.enemyHealthPerRoom + kind * COMBAT_CONFIG.enemyHealthPerTier;
+    const roomProgress = room - 1;
+    const health = COMBAT_CONFIG.enemyStartingHealth + roomProgress * COMBAT_CONFIG.enemyHealthPerRoom
+      + roomProgress * roomProgress * COMBAT_CONFIG.enemyHealthAcceleration + kind * COMBAT_CONFIG.enemyHealthPerTier;
     const enemy = createActor(`room-${room}-enemy-${slot}`, names[kind], 'enemy', slot, health, kind === 1 ? 'lowest' : 'front');
-    enemy.attackDamage = COMBAT_CONFIG.enemyStartingDamage + Math.floor((room - 1) / COMBAT_CONFIG.enemyDamageEveryRooms) + (kind === 2 ? 1 : 0);
+    enemy.attackDamage = COMBAT_CONFIG.enemyStartingDamage + Math.floor(roomProgress / COMBAT_CONFIG.enemyDamageEveryRooms)
+      + Math.floor(roomProgress * roomProgress / COMBAT_CONFIG.enemyDamageAccelerationDivisor) + (kind === 2 ? 1 : 0);
     enemy.attackCooldownMs = enemy.attackRemainingMs = Math.max(1600, COMBAT_CONFIG.enemyAttackCooldownMs - (room - 1) * COMBAT_CONFIG.enemyAttackCooldownReductionPerRoomMs + slot * COMBAT_CONFIG.enemyAttackStaggerMs);
     enemy.reach = kind === 1 ? 'far' : 'near';
     return enemy;
@@ -39,7 +43,7 @@ function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
 
 function setEnemies(encounter: EncounterState, enemies: Combatant[]): void {
   encounter.enemies = enemies; encounter.enemy = enemies[0]!;
-  encounter.outcome = 'ongoing'; encounter.phase = 'preparation'; encounter.commands.length = 0;
+  encounter.outcome = 'ongoing'; encounter.phase = 'preparation'; encounter.commands.length = 0; encounter.elapsedMs = 0; encounter.bossEnraged = false;
 }
 
 /** The opening encounter is room one; all party and inventory objects remain owned by the encounter. */
