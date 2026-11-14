@@ -1,317 +1,209 @@
 /// <reference types="vite/client" />
 import { createFullEncounter } from '../combat/encounter.ts';
-import { areAdjacent, itemBonuses, moveItem, occupiedCells, storeItem } from '../combat/inventory.ts';
-import { applyEffect, chooseHeroTarget, evaluateItem, prepareEncounter, queueWinding, startBattle, swapHeroPositions, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
-import { COMBAT_CONFIG } from '../combat/config.ts';
+import { areAdjacent, canPlaceItem, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../combat/inventory.ts';
+import { applyEffect, prepareEncounter, queueWinding, startBattle, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { beginRun, calmWorkshopItem, claimReward, createRun, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop, type RunState } from '../combat/run.ts';
+import { ITEM_CATEGORY_LABELS, ITEM_CLASS_LABELS } from '../combat/items.ts';
+import { ItemDialogue } from '../presentation/itemDialogue.ts';
 
-const escape = (value: unknown): string => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
-const action = (name: string, value = ''): string => `data-action="${name}" data-value="${escape(value)}" data-key="${name}-${escape(value)}"`;
-const bar = (label: string, current: number, max: number, kind: string): string => `<div class="meter"><span>${escape(label)} <b>${Math.ceil(current)}/${Math.ceil(max)}</b></span><progress class="${kind}" value="${Math.max(0, current)}" max="${Math.max(1, max)}" aria-label="${escape(label)}"></progress></div>`;
-
+/** Game state and player commands. Phaser renders this model; this class has no DOM dependency. */
 export class GameUI {
   state: EncounterState;
-  private readonly root: HTMLElement;
-  private heroId: string;
-  private selectedItem: string | null = null;
-  private swapping = false;
-  private message = '';
-  private showingInventory = false;
-  private confirmReset = false;
-  private paused = false;
-  private previousLog = '\0';
-  private followsLog = true;
-  private latestAction?: CombatEvent;
-  private highlightUntil = 0;
-  private inputHeld = false;
-  private resetFocusKey?: string;
-  private pendingFocusKey?: string;
-  private previewItem: string | null = null;
-  private previewFromFocus = false;
+  readonly run: RunState;
+  selectedItem: string | null = null;
+  message = '';
+  confirmReset = false;
+  paused = false;
+  latestAction?: CombatEvent;
+  highlightUntil = 0;
+  readonly dialogue = new ItemDialogue();
+  private dialogueSequence = 0;
+  private fastRun = false;
 
   constructor() {
     this.state = this.freshEncounter();
-    if (import.meta.env.MODE === 'test') {
-      const scenario = new URLSearchParams(location.search).get('scenario');
-      if (scenario) {
-        const state = this.state, hero = state.heroes[0];
-        moveItem(state, 'item-1', hero.id, 0);
-        startBattle(state);
-        if (scenario === 'winding') {
-          state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
-          hero.status = 'stopped'; hero.wind = 0;
-        } else if (scenario === 'drop') {
-          hero.status = 'stopped'; hero.durability = 1;
-          applyEffect(state, hero.id, 'damage', 1);
-          state.enemies.forEach(enemy => applyEffect(state, enemy.id, 'damage', enemy.maxHp));
-        } else if (scenario === 'defeat') {
-          state.heroes.forEach(candidate => { candidate.status = 'stopped'; candidate.durability = 1; });
-          state.heroes.forEach(candidate => applyEffect(state, candidate.id, 'damage', 1));
-        } else if (scenario === 'log') {
-          state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
-          state.heroes.forEach(candidate => candidate.items.forEach(item => { item.cooldownMs = 250; item.remainingMs = 250; item.trigger = 'always'; item.reach = 'far'; }));
-          state.events = Array.from({ length: 50 }, (_, index) => ({ sequence: index + 1, kind: 'state' as const, actorId: hero.id, sourceId: hero.id, sourceName: hero.name, targetId: hero.id, targetName: hero.name, amount: 0, message: `Тестовое событие ${index + 1}` }));
-          state.nextEventSequence = 51;
-        }
-      }
-    }
-    this.heroId = this.state.heroes[0].id;
-    this.root = document.getElementById('game-ui')!;
-    this.root.innerHTML = '<main id="screen"></main><section class="history" aria-label="Журнал боя"><h2>Журнал боя</h2><div id="history-list" class="history-list" tabindex="0"></div></section>';
-    this.root.dataset.ready = 'true';
-    this.root.addEventListener('click', event => this.onClick(event));
-    this.root.addEventListener('focusin', event => {
-      const target = event.target as Element;
-      if (target.closest('.item-preview')) return;
-      if (!target.matches(':focus-visible')) return;
-      const itemButton = target.closest<HTMLButtonElement>('button[data-action="item"]');
-      const cellButton = target.closest<HTMLButtonElement>('button[data-action="cell"]');
-      if (itemButton) {
-        this.previewItem = itemButton.dataset.value ?? null;
-        this.previewFromFocus = true;
-      } else if (cellButton) {
-        const hero = this.state.heroes.find(candidate => candidate.id === this.heroId);
-        const cell = Number(cellButton.dataset.value);
-        const occupied = hero?.items.find(item => occupiedCells(item, item.cell ?? 0)?.includes(cell));
-        this.previewItem = occupied?.id ?? this.selectedItem;
-        this.previewFromFocus = true;
-      } else {
-        this.previewItem = null;
-        this.previewFromFocus = false;
-      }
-      this.updateItemPreview();
-    });
-    // Do not replace an interactive button between press and release: doing so
-    // drops clicks (especially rapid winding) and keyboard activation.
-    this.root.addEventListener('pointerdown', () => { this.inputHeld = true; });
-    this.root.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') this.inputHeld = true;
-      if (!this.confirmReset) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        this.confirmReset = false;
-        this.pendingFocusKey = this.resetFocusKey;
-        this.resetFocusKey = undefined;
-        this.render();
-      } else if (event.key === 'Tab') {
-        const dialog = this.root.querySelector<HTMLElement>('.confirmation');
-        const buttons = [...(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
-        if (buttons.length !== 2) return;
-        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-        if (event.shiftKey && index <= 0) { event.preventDefault(); buttons[buttons.length - 1]!.focus(); }
-        else if (!event.shiftKey && index === buttons.length - 1) { event.preventDefault(); buttons[0]!.focus(); }
-      }
-    });
-    const release = (): void => { window.setTimeout(() => { this.inputHeld = false; this.render(); }, 0); };
-    window.addEventListener('pointerup', release);
-    window.addEventListener('pointercancel', release);
-    window.addEventListener('keyup', event => { if (event.key === 'Enter' || event.key === ' ') release(); });
-    window.addEventListener('blur', release);
-    const history = this.root.querySelector<HTMLElement>('#history-list')!;
-    history.addEventListener('scroll', () => { this.followsLog = history.scrollHeight - history.scrollTop - history.clientHeight < 8; });
-    this.render();
+    this.run = createRun(this.state);
+    if (import.meta.env.MODE === 'test' && typeof location !== 'undefined') this.loadTestScenario(new URLSearchParams(location.search).get('scenario'));
   }
 
   private freshEncounter(): EncounterState {
-    const state = createFullEncounter();
+    const state = createFullEncounter({ fullStartingInventory: true });
     prepareEncounter(state);
     return state;
+  }
+
+  private loadTestScenario(scenario: string | null): void {
+    if (!scenario) return;
+    const hero = this.state.heroes[0]!;
+    if (scenario === 'full-run') {
+      this.fastRun = true;
+      this.run.random = () => 0;
+      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.wind = 0;
+      this.prepareFastEncounter();
+      return;
+    }
+    if (scenario === 'empty-backpack') { hero.items.splice(0); return; }
+    moveItem(this.state, 'item-1', hero.id, 0);
+    if (scenario === 'busy' || scenario === 'busy-result' || scenario === 'overflow') {
+      moveItem(this.state, 'whetstone-1', this.state.heroes[0]!.id, 1);
+      moveItem(this.state, 'spring-1', this.state.heroes[1]!.id, 1);
+      moveItem(this.state, 'mercy-1', this.state.heroes[2]!.id, 1);
+      moveItem(this.state, 'heart-1', this.state.heroes[3]!.id, 1);
+      if (scenario === 'overflow') this.state.heroes.forEach((candidate, slot) => {
+        const source = candidate.items[candidate.items.length - 1]!;
+        for (let copy = 0; copy < 2; copy++) candidate.items.push({ ...source, id: `test-extra-${slot}-${copy}`, name: `${source.name} ${copy + 1}`, cell: copy + 2, remainingMs: 60_000, cooldownMs: 60_000 });
+      });
+    }
+    startBattle(this.state);
+    if (scenario === 'busy' || scenario === 'busy-result' || scenario === 'overflow') {
+      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
+      if (scenario === 'busy-result') {
+        this.state.enemies.forEach(enemy => { enemy.hp = 0; enemy.status = 'dead'; });
+        this.state.outcome = 'victory'; this.state.phase = 'result';
+      }
+    } else if (scenario === 'winding') {
+      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; }); hero.status = 'stopped'; hero.wind = 0;
+    } else if (scenario === 'drop') {
+      hero.status = 'stopped'; hero.durability = 1;
+      applyEffect(this.state, hero.id, 'damage', 1);
+      this.state.enemies.forEach(enemy => applyEffect(this.state, enemy.id, 'damage', enemy.maxHp));
+    } else if (scenario === 'defeat') {
+      this.state.heroes.forEach(candidate => { candidate.status = 'stopped'; candidate.durability = 1; });
+      this.state.heroes.forEach(candidate => applyEffect(this.state, candidate.id, 'damage', 1));
+    } else if (scenario === 'log') {
+      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
+      this.state.heroes.forEach(candidate => candidate.items.forEach(item => { item.cooldownMs = 250; item.remainingMs = 250; item.trigger = 'always'; item.reach = 'far'; }));
+      this.state.events = Array.from({ length: 50 }, (_, index) => ({ sequence: index + 1, kind: 'state' as const, actorId: hero.id, sourceId: hero.id, sourceName: hero.name, targetId: hero.id, targetName: hero.name, amount: 0, message: `Тестовое событие ${index + 1}` }));
+      this.state.nextEventSequence = 51;
+    }
+  }
+
+  private prepareFastEncounter(): void {
+    if (!this.fastRun) return;
+    this.state.enemies.forEach(enemy => { enemy.hp = enemy.maxHp = 1; enemy.attackDamage = 0; });
+    this.state.heroes[1]!.items.forEach(item => { item.cooldownMs = item.remainingMs = 50; item.damage = 20; item.trigger = 'always'; item.reach = 'far'; });
+  }
+
+  get roomChoices() { return nextRoomChoices(this.run); }
+  get allItems(): CombatItem[] { return [...this.state.stash, ...this.state.floor, ...this.state.heroes.flatMap(hero => hero.items)]; }
+
+  tick(): void {
+    const now = performance.now();
+    for (const event of this.state.events) {
+      if (!event.sequence || event.sequence <= this.dialogueSequence) continue;
+      this.dialogueSequence = event.sequence;
+      this.dialogue.onCombatEvent(event, this.state, now);
+    }
+    this.dialogue.tick(this.state, now);
+    syncRun(this.run);
+    const latest = [...this.state.events].reverse().find(event => event.kind === 'item' || event.kind === 'enemy');
+    if (latest && latest !== this.latestAction) { this.latestAction = latest; this.highlightUntil = performance.now() + 700; }
   }
 
   setPaused(paused: boolean): void { this.paused = paused; }
   get dialogOpen(): boolean { return this.confirmReset; }
 
-  private onClick(event: Event): void {
-    const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]');
-    if (!button || button.disabled) return;
-    if (event instanceof MouseEvent && event.detail > 0) { this.previewItem = null; this.previewFromFocus = false; }
-    const name = button.dataset.action;
-    const value = button.dataset.value ?? '';
-    const state = this.state;
-    if (this.confirmReset && name !== 'cancel-reset' && name !== 'confirm-reset') return;
-    if (name === 'hero') {
-      const target = state.heroes.find(hero => hero.id === value);
-      const previous = state.heroes.find(hero => hero.id === this.heroId);
-      if (target && previous && this.swapping && target !== previous) {
-        if (swapHeroPositions(state, previous.slot, target.slot)) this.message = 'Позиции изменены';
-        this.swapping = false;
-      }
-      this.heroId = value;
-    } else if (name === 'swap' && state.phase === 'preparation') {
-      this.swapping = !this.swapping;
-      this.message = this.swapping ? 'Выберите другую позицию' : '';
-    } else if (name === 'item') {
-      this.selectedItem = this.selectedItem === value ? null : value;
-      this.message = this.selectedItem ? 'Выберите клетку рюкзака' : '';
-    } else if (name === 'cell') {
-      const hero = state.heroes.find(candidate => candidate.id === this.heroId);
-      if (!hero) return;
-      const cell = Number(value);
-      const occupied = hero.items.find(item => occupiedCells(item, item.cell ?? 0)?.includes(cell));
-      if (!this.selectedItem && occupied) { this.selectedItem = occupied.id; this.message = 'Выберите клетку рюкзака'; }
-      else if (this.selectedItem && occupied?.id === this.selectedItem) { this.selectedItem = null; this.message = 'Выбор снят'; }
-      else if (this.selectedItem && moveItem(state, this.selectedItem, hero.id, cell)) { this.selectedItem = null; this.message = 'Предмет размещён'; }
-      else this.message = 'Предмет не помещается: проверьте границы и занятые клетки.';
-    } else if (name === 'start') {
-      if (startBattle(state)) { this.selectedItem = null; this.message = ''; }
-    } else if (name === 'store' && value) {
-      if (storeItem(state, value)) {
-        if (this.selectedItem === value) this.selectedItem = null;
-        if (this.previewItem === value) this.previewItem = null;
-        this.pendingFocusKey = `item-${value}`;
-        this.message = 'Предмет убран в запас';
-      }
-    } else if (name === 'wind') {
-      queueWinding(state, value);
-    } else if (name === 'manage' && state.outcome !== 'ongoing') {
-      this.showingInventory = true;
-    } else if (name === 'result') {
-      this.showingInventory = false;
-    } else if (name === 'restart') {
-      this.resetFocusKey = button.dataset.key;
-      this.confirmReset = true;
-    } else if (name === 'cancel-reset') {
-      this.confirmReset = false;
-      this.pendingFocusKey = this.resetFocusKey;
-      this.resetFocusKey = undefined;
-    } else if (name === 'confirm-reset') {
-      this.state = this.freshEncounter();
-      this.heroId = this.state.heroes[0].id;
-      this.selectedItem = null;
-      this.swapping = false;
-      this.showingInventory = false;
-      this.confirmReset = false;
-      this.pendingFocusKey = 'start-';
-      this.resetFocusKey = undefined;
-      this.message = '';
-      this.previousLog = '\0';
-      this.followsLog = true;
-      this.latestAction = undefined;
-      this.previewItem = null;
-      this.previewFromFocus = false;
-    }
-    this.render();
-  }
-
-  private itemDescription(item: CombatItem, hero?: Combatant): string {
-    const bonuses = hero ? itemBonuses(item, hero.items) : { damage: 0, cooldownFactor: 1, descriptions: [] };
-    const cooldown = item.cooldownMs * bonuses.cooldownFactor / 1000;
-    const amount = `${item.effect === 'heal' ? 'Лечение' : 'Урон'}: ${item.damage}${bonuses.damage ? ` → ${item.damage + bonuses.damage}` : ''}.`;
-    const reach = item.effect !== 'heal' && item.reach === 'near' ? ' Ближнее оружие действует с позиций 1–2.' : '';
-    return `${item.description ?? 'Автоматическое действие.'} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${bonuses.cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}`;
-  }
-
-  private updateItemPreview(): void {
-    const preview = this.root.querySelector<HTMLElement>('.item-preview');
-    if (!preview) return;
-    const hero = this.state.heroes.find(candidate => candidate.id === this.heroId) ?? this.state.heroes[0];
-    const all = [...this.state.stash, ...this.state.floor, ...this.state.heroes.flatMap(candidate => candidate.items)];
-    const item = all.find(candidate => candidate.id === (this.previewFromFocus ? this.previewItem : this.selectedItem));
-    const owned = item ? hero.items.includes(item) : false;
-    const markup = item
-      ? `<strong>${escape(item.name)}</strong><p>${escape(this.itemDescription(item, owned ? hero : undefined))}</p>${owned ? `<button ${action('store', item.id)} aria-label="Убрать ${escape(item.name)} в запас">Убрать в запас</button>` : ''}`
+  itemDescription(item: CombatItem, hero?: Combatant): string {
+    const bonuses = hero ? itemBonuses(item, hero.items) : { damage: 0, cooldownFactor: 1, healing: 0, wind: 0, descriptions: [] };
+    const identity = item.classAffinity && item.category
+      ? `Тема: ${ITEM_CLASS_LABELS[item.classAffinity]} · тип: ${ITEM_CATEGORY_LABELS[item.category].toLowerCase()}. `
       : '';
-    if (preview.dataset.signature !== markup) {
-      preview.innerHTML = markup;
-      preview.dataset.signature = markup;
+    if (item.trigger === 'passive' || item.effect === 'passive') {
+      const passive = item.passiveBonuses;
+      const stats = [
+        ...(passive?.armor ? [`Броня: −${passive.armor} урона за удар`] : []),
+        ...(passive?.damage ? [`Урон вещей: +${passive.damage}`] : []),
+        ...(passive?.healing ? [`Лечение: +${passive.healing}`] : []),
+        ...(passive?.wind ? [`Подзавод: +${passive.wind}`] : []),
+        ...(passive?.cooldownFactor ? [`Кулдаун: −${Math.round((1 - passive.cooldownFactor) * 100)}%`] : []),
+      ];
+      return `${identity}${item.description ?? 'Пассивное свойство.'} ${stats.join('; ')}.`;
     }
+    const cooldown = item.cooldownMs * bonuses.cooldownFactor / 1000;
+    const amount = item.effect === 'wind'
+      ? `Подзавод: ${(item.windAmount ?? item.damage) + bonuses.wind}.`
+      : item.effect === 'heal'
+        ? `Лечение: ${item.damage + bonuses.healing}.`
+        : `Урон: ${item.damage + bonuses.damage}.`;
+    const reach = (!item.effect || item.effect === 'damage') && item.reach === 'near' ? ' Владелец сам приближается к переднему врагу.' : '';
+    return `${identity}${item.description ?? 'Автоматическое действие.'}${item.calmed ? ' Предмет успокоен.' : ''} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${bonuses.cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}`;
   }
 
-  private preparation(): string {
-    const state = this.state;
-    const hero = state.heroes.find(candidate => candidate.id === this.heroId) ?? state.heroes[0];
-    const cells = Array.from({ length: 16 }, (_, cell) => {
-      const item = hero.items.find(candidate => occupiedCells(candidate, candidate.cell ?? 0)?.includes(cell));
-      const related = item && hero.items.some(other => other.id !== item.id && areAdjacent(item, other) && ((item.tags?.includes('blade') && other.tags?.includes('whetstone')) || (item.tags?.includes('whetstone') && other.tags?.includes('blade')) || (item.tags?.includes('clockwork') && other.tags?.includes('spring')) || (item.tags?.includes('spring') && other.tags?.includes('clockwork'))));
-      return `<button class="cell ${item ? 'occupied' : ''} ${related ? 'related' : ''} ${item?.id === this.selectedItem ? 'selected' : ''}" ${action('cell', String(cell))} aria-label="Клетка ${cell + 1}${item ? `: ${escape(item.name)}` : ': свободно'}">${item ? escape(item.name) : ''}</button>`;
-    }).join('');
-    const heroButtons = state.heroes.map(candidate => `<button class="hero-choice ${hero.id === candidate.id ? 'selected' : ''}" ${action('hero', candidate.id)} aria-pressed="${hero.id === candidate.id}"><span>${candidate.slot + 1}</span> ${escape(candidate.name)}${candidate.status === 'dead' ? ' †' : ''}</button>`).join('');
-    const items = (list: CombatItem[], empty: string): string => list.length ? list.map(item => `<button class="stash-item ${item.id === this.selectedItem ? 'selected' : ''}" ${action('item', item.id)} aria-pressed="${item.id === this.selectedItem}" aria-label="${escape(`${item.name}. ${this.itemDescription(item)}`)}">${escape(item.name)}</button>`).join('') : `<p class="muted">${escape(empty)}</p>`;
-    const bonuses = hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(text => `<li>${escape(item.name)}: ${escape(text)}</li>`)).join('');
-    return `<header class="screen-head"><div><span class="eyebrow">${this.showingInventory ? 'ПОСЛЕ БОЯ' : 'ПОДГОТОВКА'}</span><h1>Отряд</h1></div>${this.showingInventory ? `<button ${action('result')}>Вернуться к результату</button>` : `<button class="primary" ${action('start')}>Начать бой</button>`}</header>
-      <div class="preparation"><section class="panel formation-panel"><h2>Строй</h2><div class="hero-list">${heroButtons}</div>${state.phase === 'preparation' ? `<button ${action('swap')} aria-pressed="${this.swapping}">${this.swapping ? 'Выберите другую позицию' : 'Переставить героя'}</button>` : ''}</section>
-      <section class="panel backpack-panel"><h2>Рюкзак: ${escape(hero.name)}</h2>${hero.items.length ? '' : '<p class="muted empty-backpack">Рюкзак пуст. Выберите предмет в запасе и клетку рюкзака.</p>'}<div class="grid">${cells}</div>${bonuses ? `<ul class="bonuses">${bonuses}</ul>` : ''}<p class="message" role="status">${escape(this.message)}</p><div class="details item-preview" aria-live="polite"></div></section>
-      <section class="panel stash-panel"><h2>Запас</h2><div class="stash">${items(state.stash, 'Запас пуст')}</div>${state.phase === 'result' ? `<h2>На полу</h2><div class="stash">${items(state.floor, 'На полу нет предметов')}</div>` : ''}</section></div>`;
+  selectItem(itemId: string): void {
+    this.selectedItem = this.selectedItem === itemId ? null : itemId;
+    this.message = this.selectedItem ? 'Перетащите вещь в рюкзак' : '';
   }
 
-  private combatant(hero: Combatant): string {
-    const statuses: Record<Combatant['status'], [string, string]> = { human: ['●', 'Человек'], enemy: ['●', 'Враг'], rebirthing: ['◌', 'Перерождение'], stopped: ['■', 'Кукла остановлена'], active: ['◆', 'Кукла работает'], dead: ['✕', 'Окончательная гибель'] };
-    const [symbol, defaultName] = statuses[hero.status];
-    const name = hero.side === 'enemy' && hero.status === 'dead' ? 'Побеждён' : defaultName;
-    const isDoll = hero.status === 'stopped' || hero.status === 'active';
-    const health = hero.status === 'rebirthing' ? bar('Перерождение', COMBAT_CONFIG.rebirthMs - hero.rebirthMs, COMBAT_CONFIG.rebirthMs, 'rebirth') : isDoll ? bar('Прочность', hero.durability, hero.maxDurability, 'durability') + bar('Завод', hero.wind, hero.maxWind, 'wind') : hero.status === 'dead' ? '' : bar('Здоровье', hero.hp, hero.maxHp, 'health');
-    const winding = hero.status === 'stopped' ? `<button class="wind-button" ${action('wind', hero.id)} aria-label="Завести куклу ${escape(hero.name)}. Осталось нажатий: ${Math.ceil((hero.maxWind - hero.wind) / (hero.maxWind / COMBAT_CONFIG.clicksToFull))}">Завести · ${escape(hero.name)} · осталось ${Math.ceil((hero.maxWind - hero.wind) / (hero.maxWind / COMBAT_CONFIG.clicksToFull))}</button>` : '';
-    const items = hero.side === 'hero' ? hero.items.map(item => {
-      const evaluation = evaluateItem(this.state, hero, item);
-      const effective = item.cooldownMs * itemBonuses(item, hero.items).cooldownFactor;
-      const remaining = Math.max(0, item.remainingMs);
-      return `<div class="equipped"><div><strong>${escape(item.name)}</strong> <span>${(remaining / 1000).toFixed(1)} с</span></div><progress class="cooldown" value="${Math.max(0, effective - remaining)}" max="${effective}" aria-label="Готовность: ${escape(item.name)}"></progress><small>${escape(evaluation.reason ?? (evaluation.target ? `Цель: ${evaluation.target.name}` : 'Нет доступной цели'))}</small><details data-details="item-${escape(item.id)}"><summary data-key="details-${escape(item.id)}">Правила предмета</summary><p>${escape(this.itemDescription(item, hero))}</p></details></div>`;
-    }).join('') : '';
-    const grid = hero.side === 'hero' ? `<section class="battle-backpack" aria-label="Рюкзак ${escape(hero.name)}"><h4>Рюкзак</h4><div class="grid readonly-grid">${Array.from({ length: 16 }, (_, cell) => {
-      const item = hero.items.find(candidate => occupiedCells(candidate, candidate.cell ?? 0)?.includes(cell));
-      return `<span class="readonly-cell ${item ? 'occupied' : ''}" aria-label="Клетка ${cell + 1}: ${escape(item?.name ?? 'свободно')}">${item ? escape(item.name) : ''}</span>`;
-    }).join('')}</div>${hero.items.length ? hero.items.flatMap(item => itemBonuses(item, hero.items).descriptions.map(text => `<p>${escape(item.name)}: ${escape(text)}</p>`)).join('') : '<small class="muted">Нет предметов</small>'}</section>` : '';
-    const enemyTarget = hero.side === 'enemy' && hero.status === 'enemy' ? `<small>Цель: ${escape(chooseHeroTarget(this.state.heroes, hero.targetPolicy, hero.slot, hero.reach)?.name ?? 'нет доступной цели')}</small>` : '';
-    const highlighted = performance.now() < this.highlightUntil && (this.latestAction?.actorId === hero.id ? 'action-source' : this.latestAction?.targetId === hero.id ? 'action-target' : '');
-    return `<article class="combatant ${hero.status} ${highlighted}"><div class="combatant-title"><h3>${hero.slot + 1}. ${escape(hero.name)}</h3><span class="state">${symbol} ${name}</span></div>${health}${enemyTarget}${hero.status === 'rebirthing' ? `<small>Осталось ${(hero.rebirthMs / 1000).toFixed(1)} с</small>` : ''}${winding}${items || (hero.side === 'hero' && hero.status !== 'dead' ? '<small class="muted">Нет предметов</small>' : '')}${grid}</article>`;
+  clickCell(heroId: string, cell: number): void {
+    if (this.state.phase === 'combat' || this.confirmReset) return;
+    const hero = this.state.heroes.find(candidate => candidate.id === heroId);
+    if (!hero) return;
+    const occupied = hero.items.find(item => occupiedCells(item, item.cell ?? 0)?.includes(cell));
+    if (!this.selectedItem && occupied) this.selectItem(occupied.id);
+    else if (this.selectedItem && occupied?.id === this.selectedItem) { this.selectedItem = null; this.message = 'Выбор снят'; }
+    else if (this.selectedItem && this.dropItem(this.selectedItem, hero.id, cell)) { this.selectedItem = null; this.message = 'Предмет размещён'; }
+    else this.message = 'Предмет не помещается: проверьте форму и занятые клетки.';
   }
 
-  private battle(): string {
-    const state = this.state;
-    const result = state.outcome !== 'ongoing';
-    const notice = result ? `<section class="outcome" role="status"><h1>${state.outcome === 'victory' ? 'Победа' : 'Поражение'}</h1><div class="actions"><button class="primary" ${action('manage')}>Распределить предметы</button><button ${action('restart')}>Начать заново</button></div></section>` : '';
-    const confirmation = this.confirmReset ? `<section class="confirmation" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><h2 id="reset-title">Начать заново?</h2><p id="reset-description">Текущий бой и подготовка будут сброшены. Все изменения будут потеряны.</p><div class="actions"><button class="danger" ${action('confirm-reset')}>Сбросить и начать заново</button><button ${action('cancel-reset')}>${result ? 'Вернуться к результату' : 'Вернуться к бою'}</button></div></section>` : '';
-    const cue = `<p class="action-cue">${this.latestAction ? escape(this.latestAction.message) : ''}</p>`;
-    return `<header class="screen-head"><h1>${this.paused && !result ? 'Пауза' : 'Бой'}</h1>${!result ? `<button ${action('restart')}>Начать заново</button>` : ''}</header>${notice}${confirmation}${cue}<div class="battle-grid"><section><h2>Отряд</h2><div class="combatants">${state.heroes.map(hero => this.combatant(hero)).join('')}</div></section><section><h2>Враги</h2><div class="combatants">${state.enemies.map(enemy => this.combatant(enemy)).join('')}</div></section></div>${state.floor.length ? `<p>На полу: ${state.floor.map(item => escape(item.name)).join(', ')}</p>` : ''}`;
+  dropItem(itemId: string, heroId: string, anchor: number, reward = false): boolean {
+    const item = reward ? this.run.offers.find(candidate => candidate.id === itemId) : this.allItems.find(candidate => candidate.id === itemId);
+    if (!item || !canPlaceItem(this.state, item, heroId, anchor)) { this.message = 'Предмет не помещается: проверьте границы и занятые клетки.'; return false; }
+    const oldOwner = this.state.heroes.find(hero => hero.items.includes(item));
+    const oldNeighbors = new Set(oldOwner?.id === heroId ? oldOwner.items.filter(other => other !== item && areAdjacent(item, other)).map(other => other.id) : []);
+    if (reward && !claimReward(this.run, itemId)) return false;
+    if (!moveItem(this.state, itemId, heroId, anchor)) return false;
+    this.dialogue.onPlacement(item, heroId, oldNeighbors, this.state, performance.now());
+    this.selectedItem = null; this.message = 'Предмет размещён'; return true;
   }
 
-  render(): void {
-    if (this.inputHeld) return;
-    const screen = this.root.querySelector<HTMLElement>('#screen')!;
-    const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.key : undefined;
-    const openDetails = [...screen.querySelectorAll<HTMLDetailsElement>('details[open]')].map(element => element.dataset.details);
-    const latest = [...this.state.events].reverse().find(event => event.kind === 'item' || event.kind === 'enemy');
-    if (latest && latest !== this.latestAction) { this.latestAction = latest; this.highlightUntil = performance.now() + 1800; }
-    screen.innerHTML = this.state.phase === 'preparation' || this.showingInventory ? this.preparation() : this.battle();
-    screen.querySelectorAll<HTMLDetailsElement>('details').forEach(element => { if (openDetails.includes(element.dataset.details)) element.open = true; });
-    this.updateItemPreview();
-    const historyPanel = this.root.querySelector<HTMLElement>('.history')!;
-    if (this.confirmReset) {
-      for (const element of [...screen.children]) if (!element.classList.contains('confirmation')) element.setAttribute('inert', '');
-      historyPanel.setAttribute('inert', '');
-      const dialog = screen.querySelector<HTMLElement>('.confirmation')!;
-      const focusTarget = this.pendingFocusKey
-        ? [...dialog.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === this.pendingFocusKey)
-        : focused ? [...dialog.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === focused) : undefined;
-      (focusTarget ?? dialog.querySelector<HTMLButtonElement>('button'))?.focus({ preventScroll: true });
-    } else {
-      historyPanel.removeAttribute('inert');
-      if (this.pendingFocusKey) {
-        [...screen.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === this.pendingFocusKey)?.focus({ preventScroll: true });
-      } else if (focused) {
-        [...screen.querySelectorAll<HTMLElement>('[data-key]')].find(element => element.dataset.key === focused)?.focus({ preventScroll: true });
+  dropToStash(itemId: string): boolean {
+    if (!storeItem(this.state, itemId)) return false;
+    if (this.selectedItem === itemId) this.selectedItem = null;
+    this.message = 'Предмет убран в запас'; return true;
+  }
+
+  rotateItem(itemId: string): boolean {
+    const owner = this.state.heroes.find(hero => hero.items.some(item => item.id === itemId));
+    const item = owner?.items.find(candidate => candidate.id === itemId);
+    const oldNeighbors = new Set(item && owner ? owner.items.filter(other => other !== item && areAdjacent(item, other)).map(other => other.id) : []);
+    const ok = rotateItemInInventory(this.state, itemId);
+    if (ok && item && owner) {
+      if (owner.items.some(other => other !== item && !oldNeighbors.has(other.id) && areAdjacent(item, other))) this.dialogue.onPlacement(item, owner.id, oldNeighbors, this.state, performance.now());
+      else this.dialogue.onPlayerInteraction(item, owner.id, performance.now());
+    }
+    this.message = ok ? 'Поворот на 90°' : 'В таком положении предмет не помещается';
+    return ok;
+  }
+
+  action(name: string, value = ''): void {
+    if (this.confirmReset && name !== 'cancel-reset' && name !== 'confirm-reset') return;
+    if (name === 'item') this.selectItem(value);
+    else if (name === 'cell') { const [heroId, raw] = value.split(':'); this.clickCell(heroId ?? '', Number(raw)); }
+    else if (name === 'rotate' && this.selectedItem) this.rotateItem(this.selectedItem);
+    else if (name === 'begin-run') {
+      if (beginRun(this.run) && startBattle(this.state)) { this.selectedItem = null; this.message = ''; }
+    }
+    else if (name === 'route') { if (openRoute(this.run)) { this.selectedItem = null; this.message = ''; } }
+    else if (name === 'room') {
+      if (enterRoom(this.run, value)) {
+        this.selectedItem = null; this.message = '';
+        if (this.run.stage === 'battle') { this.prepareFastEncounter(); startBattle(this.state); }
       }
+    } else if (name === 'claim') { if (claimReward(this.run, value)) this.message = 'Предмет добавлен в запас'; }
+    else if (name === 'workshop-wind') { if (windWorkshop(this.run)) this.message = 'Завод восстановлен; прочность не изменилась'; }
+    else if (name === 'calm') { if (calmWorkshopItem(this.run, value)) this.message = 'Предмет успокоен'; }
+    else if (name === 'leave-workshop') { if (leaveWorkshop(this.run)) this.message = 'Работа мастерской завершена'; }
+    else if (name === 'event-choice') { if (resolveInfirmary(this.run, value)) this.message = value === 'heal' ? 'Люди получили лечение' : 'Куклы починены'; }
+    else if (name === 'store') this.dropToStash(value);
+    else if (name === 'wind') queueWinding(this.state, value);
+    else if (name === 'restart') this.confirmReset = true;
+    else if (name === 'cancel-reset') this.confirmReset = false;
+    else if (name === 'confirm-reset') {
+      this.state = this.freshEncounter();
+      Object.assign(this.run, createRun(this.state));
+      this.prepareFastEncounter(); this.selectedItem = null; this.confirmReset = false;
+      this.message = ''; this.latestAction = undefined; this.highlightUntil = 0; this.paused = false;
+      this.dialogue.reset(); this.dialogueSequence = 0;
     }
-    this.pendingFocusKey = undefined;
-    this.root.querySelector<HTMLElement>('.history')!.hidden = this.state.phase === 'preparation' || this.showingInventory;
-    const history = this.root.querySelector<HTMLElement>('#history-list')!;
-    const signature = this.state.events.map(event => event.sequence).join(',');
-    if (signature !== this.previousLog) {
-      const anchor = [...history.querySelectorAll<HTMLElement>('[data-sequence]')].find(entry => entry.offsetTop + entry.offsetHeight > history.scrollTop);
-      const anchorSequence = anchor?.dataset.sequence;
-      const anchorOffset = anchor ? history.scrollTop - anchor.offsetTop : 0;
-      const entries = document.createDocumentFragment();
-      for (const event of this.state.events) {
-        const entry = document.createElement('div');
-        entry.dataset.sequence = String(event.sequence);
-        entry.textContent = event.message;
-        entries.append(entry);
-      }
-      if (!this.state.events.length) entries.append('Событий пока нет');
-      history.replaceChildren(entries);
-      const matchingAnchor = [...history.querySelectorAll<HTMLElement>('[data-sequence]')].find(entry => entry.dataset.sequence === anchorSequence);
-      history.scrollTop = this.followsLog ? history.scrollHeight : matchingAnchor ? matchingAnchor.offsetTop + anchorOffset : 0;
-      this.previousLog = signature;
-    }
-    this.root.querySelector<HTMLElement>('.history')!.hidden = this.state.phase === 'preparation' || this.showingInventory;
   }
 }

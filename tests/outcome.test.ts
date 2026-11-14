@@ -28,6 +28,16 @@ describe('encounter outcomes', () => {
     expect(state.outcome).toBe('ongoing');
   });
 
+  it('defeats a party of stopped zero-wind dolls when nobody can turn a key', () => {
+    const state = createFullEncounter();
+    state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
+    state.heroes.forEach(hero => { hero.status = 'stopped'; hero.wind = 0; hero.durability = 50; });
+    queueWinding(state, state.heroes[0].id);
+    stepEncounter(state, 50);
+    expect(state.outcome).toBe('defeat');
+    expect(state.events.some(event => event.kind === 'wind')).toBe(false);
+  });
+
   it('declares victory on the last enemy and freezes subsequent actions and input', () => {
     const state = createFullEncounter();
     state.enemies.slice(1).forEach(enemy => { enemy.status = 'dead'; enemy.hp = 0; });

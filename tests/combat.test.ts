@@ -15,11 +15,11 @@ describe('fixed encounter', () => {
 
   it('uses distinct target policies with stable tie breaking', () => {
     const state = createFullEncounter();
-    state.heroes[3].hp = 10;
+    state.heroes[3].hp = 1;
     expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[0].id);
     expect(chooseHeroTarget(state.heroes, 'lowest')?.id).toBe(state.heroes[3].id);
     state.heroes[0].status = 'dead';
-    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[1].id);
+    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[2].id);
   });
 
   it('advances independently equipped items and never creates hero attacks without an item', () => {
@@ -48,7 +48,7 @@ describe('fixed encounter', () => {
     stepEncounter(state, 50);
     expect(state.events.some(event => event.sourceId === item.id)).toBe(false);
     expect(item.remainingMs).toBe(0);
-    hero.hp = 10;
+    hero.hp = Math.floor(hero.maxHp / 4);
     stepEncounter(state, 50);
     expect(state.events.some(event => event.sourceId === item.id)).toBe(true);
   });

@@ -11,7 +11,7 @@ describe('human to doll lifecycle', () => {
     expect(applyEffect(state, hero.id, 'damage', hero.hp)).toBe(true);
     expect(hero.status).toBe('rebirthing');
     expect(hero.items[0].remainingMs).toBe(hero.items[0].cooldownMs);
-    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[1].id);
+    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[2].id);
     for (let n = 0; n < 59; n++) stepEncounter(state, 50);
     expect(hero.status).toBe('rebirthing');
     stepEncounter(state, 50);
@@ -20,6 +20,8 @@ describe('human to doll lifecycle', () => {
     expect(hero.durability).toBe(hero.maxDurability);
     expect(hero.wind).toBe(0);
     expect(hero.items[0].remainingMs).toBe(hero.items[0].cooldownMs);
+    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[2].id);
+    state.heroes.slice(1).forEach(other => { other.status = 'dead'; });
     expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(hero.id);
   });
 
@@ -31,6 +33,8 @@ describe('human to doll lifecycle', () => {
     expect([hero.wind, hero.durability]).toEqual([30, 70]);
     for (const kind of ['heal', 'poison', 'bleeding', 'fear'] as const) expect(applyEffect(state, hero.id, kind, 10)).toBe(false);
     expect([hero.wind, hero.durability]).toEqual([30, 70]);
+    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[2].id);
+    state.heroes.slice(1).forEach(other => { other.status = 'dead'; });
     expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(hero.id);
   });
 });

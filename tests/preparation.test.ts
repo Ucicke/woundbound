@@ -6,11 +6,13 @@ describe('preparation and combat boundary', () => {
   it('places a real item and lets that item act only after combat starts', () => {
     const state = createFullEncounter();
     prepareEncounter(state);
-    const itemId = state.stash[0].id;
+    const item = state.stash[0];
+    const itemId = item.id;
+    item.remainingMs = 0;
     const hero = state.heroes[0];
     stepEncounter(state, 5000);
     expect(state.events).toHaveLength(0);
-    expect(placeStashItem(state, itemId, hero.id, 0)).toBe(true);
+    expect(placeStashItem(state, itemId, hero.id, 6)).toBe(true);
     expect(state.stash.some(item => item.id === itemId)).toBe(false);
     expect(startBattle(state)).toBe(true);
     for (let n = 0; n < 40; n++) stepEncounter(state, 50);
@@ -22,7 +24,7 @@ describe('preparation and combat boundary', () => {
     prepareEncounter(state);
     const itemId = state.stash[0].id;
     const before = JSON.stringify(state);
-    expect(placeStashItem(state, itemId, state.heroes[0].id, 16)).toBe(false);
+    expect(placeStashItem(state, itemId, state.heroes[0].id, 36)).toBe(false);
     expect(placeStashItem(state, itemId, state.heroes[1].id, 0)).toBe(false);
     expect(JSON.stringify(state)).toBe(before);
     expect(startBattle(state)).toBe(true);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
-import { itemBonuses, moveItem, occupiedCells, storeItem } from '../src/combat/inventory.ts';
-import { applyEffect, prepareEncounter, startBattle, stepEncounter } from '../src/combat/simulation.ts';
+import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../src/combat/inventory.ts';
+import { applyEffect, prepareEncounter, startBattle, stepEncounter, type CombatItem } from '../src/combat/simulation.ts';
 
 describe('inventory ownership and adjacency', () => {
   it('validates whole item shapes and keeps ownership unchanged after invalid moves', () => {
@@ -9,15 +9,15 @@ describe('inventory ownership and adjacency', () => {
     prepareEncounter(state);
     const item = state.stash[0];
     item.shape = [[0, 0], [1, 0]];
-    expect(occupiedCells(item, 3)).toBeNull();
+    expect(occupiedCells(item, INVENTORY_GRID_SIZE - 1)).toBeNull();
     const before = JSON.stringify(state);
     expect(moveItem(state, item.id, state.heroes[1].id, 0)).toBe(false);
-    expect(moveItem(state, item.id, state.heroes[0].id, 3)).toBe(false);
+    expect(moveItem(state, item.id, state.heroes[0].id, INVENTORY_GRID_SIZE - 1)).toBe(false);
     expect(JSON.stringify(state)).toBe(before);
-    expect(moveItem(state, item.id, state.heroes[0].id, 0)).toBe(true);
-    expect(state.heroes[0].items[0]).toBe(item);
-    expect(occupiedCells(item, 0)).toEqual([0, 1]);
-    expect(moveItem(state, item.id, state.heroes[0].id, 4)).toBe(true);
+    expect(moveItem(state, item.id, state.heroes[0].id, 1)).toBe(true);
+    expect(state.heroes[0].items).toContain(item);
+    expect(occupiedCells(item, 1)).toEqual([1, 2]);
+    expect(moveItem(state, item.id, state.heroes[0].id, INVENTORY_GRID_SIZE)).toBe(true);
     expect(storeItem(state, item.id)).toBe(true);
     expect(state.stash).toContain(item);
     expect(state.heroes[0].items).not.toContain(item);
@@ -25,20 +25,41 @@ describe('inventory ownership and adjacency', () => {
     expect(storeItem(state, state.heroes[1].items[0].id)).toBe(false);
   });
 
+  it('addresses a 6×6 backpack and applies quarter-turn rotation before checking bounds', () => {
+    const item = { id: 'shape', name: 'L', damage: 1, cooldownMs: 1, remainingMs: 1, targetPolicy: 'front' as const, trigger: 'always' as const, shape: [[0, 0], [1, 0], [0, 1]] };
+    expect(occupiedCells({ ...item, shape: [[0, 0]] }, INVENTORY_CELL_COUNT - 1)).toEqual([INVENTORY_CELL_COUNT - 1]);
+    expect(occupiedCells(item, 30)).toBeNull();
+    expect(occupiedCells(item, 4)).toEqual([4, 5, 10]);
+    (item as CombatItem & { rotation: number }).rotation = 1;
+    expect(occupiedCells(item, 0)).toEqual([1, 7, 0]);
+    (item as CombatItem & { rotation: number }).rotation = 2;
+    expect(occupiedCells(item, 0)).toEqual([7, 6, 1]);
+  });
+
+  it('rotates a selected item before placement and locks rotation during combat', () => {
+    const state = createFullEncounter();
+    prepareEncounter(state);
+    const item = state.stash[0];
+    item.shape = [[0, 0], [1, 0], [0, 1]];
+    expect(rotateItemInInventory(state, item.id)).toBe(true);
+    expect(occupiedCells(item, 0)).toEqual([1, 7, 0]);
+    expect(startBattle(state)).toBe(true);
+    expect(rotateItemInInventory(state, item.id)).toBe(false);
+  });
+
   it('derives both bonuses only from orthogonal neighbours and recomputes after moving', () => {
     const state = createFullEncounter();
     prepareEncounter(state);
-    const blade = state.stash.find(item => item.tags?.includes('blade'))!;
+    const blade = state.heroes[0].items.find(item => item.tags?.includes('blade'))!;
     const stone = state.stash.find(item => item.tags?.includes('whetstone'))!;
     const spring = state.stash.find(item => item.tags?.includes('spring'))!;
     const hero = state.heroes[0];
-    expect(moveItem(state, blade.id, hero.id, 0)).toBe(true);
-    expect(moveItem(state, stone.id, hero.id, 1)).toBe(true);
+    expect(moveItem(state, stone.id, hero.id, INVENTORY_GRID_SIZE)).toBe(true);
     expect(itemBonuses(blade, hero.items).damage).toBe(2);
-    expect(moveItem(state, stone.id, hero.id, 5)).toBe(true);
+    expect(moveItem(state, stone.id, hero.id, INVENTORY_GRID_SIZE * 2)).toBe(true);
     expect(itemBonuses(blade, hero.items).damage).toBe(0);
     const clockwork = state.heroes[3].items[0];
-    expect(moveItem(state, spring.id, state.heroes[3].id, 1)).toBe(true);
+    expect(moveItem(state, spring.id, state.heroes[3].id, 2)).toBe(true);
     expect(itemBonuses(clockwork, state.heroes[3].items).cooldownFactor).toBeCloseTo(0.85);
   });
 
@@ -46,13 +67,12 @@ describe('inventory ownership and adjacency', () => {
     const state = createFullEncounter();
     prepareEncounter(state);
     const hero = state.heroes[0];
-    const blade = state.stash.find(item => item.tags?.includes('blade'))!;
+    const blade = state.heroes[0].items.find(item => item.tags?.includes('blade'))!;
     const stone = state.stash.find(item => item.tags?.includes('whetstone'))!;
     const spring = state.stash.find(item => item.tags?.includes('spring'))!;
     const clockwork = state.heroes[3].items[0];
-    moveItem(state, blade.id, hero.id, 0);
-    moveItem(state, stone.id, hero.id, 1);
-    moveItem(state, spring.id, state.heroes[3].id, 1);
+    moveItem(state, stone.id, hero.id, INVENTORY_GRID_SIZE);
+    moveItem(state, spring.id, state.heroes[3].id, 2);
     blade.remainingMs = 0;
     clockwork.remainingMs = 0;
     clockwork.trigger = 'always';
@@ -94,7 +114,7 @@ describe('inventory ownership and adjacency', () => {
     expect(state.floor).toContain(item);
 
     const recipient = state.heroes[1];
-    const cell = Array.from({ length: 16 }, (_, index) => index).find(index => recipient.items.every(other => !occupiedCells(other, other.cell ?? 0)?.includes(index)))!;
+    const cell = Array.from({ length: INVENTORY_CELL_COUNT }, (_, index) => index).find(index => recipient.items.every(other => !occupiedCells(other, other.cell ?? 0)?.includes(index)))!;
     expect(moveItem(state, item.id, recipient.id, cell)).toBe(true);
     expect(state.floor).not.toContain(item);
     expect(recipient.items).toContain(item);

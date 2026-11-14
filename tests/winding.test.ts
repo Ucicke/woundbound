@@ -10,8 +10,10 @@ describe('manual winding', () => {
     for (let n = 0; n < 19; n++) queueWinding(state, doll.id);
     stepEncounter(state, 50);
     expect(doll.status).toBe('stopped'); expect(doll.wind).toBe(95);
+    expect(state.events.filter(event => event.kind === 'wind')).toHaveLength(19);
     queueWinding(state, doll.id); stepEncounter(state, 50);
     expect(doll.status).toBe('active'); expect(doll.wind).toBe(100);
+    expect(state.events.filter(event => event.kind === 'wind').at(-1)?.amount).toBe(5);
     queueWinding(state, doll.id); queueWinding(state, 'missing');
     state.heroes[1].status = 'dead'; queueWinding(state, state.heroes[1].id);
     stepEncounter(state, 50);
