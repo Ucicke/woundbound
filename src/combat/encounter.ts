@@ -54,7 +54,7 @@ function generateStarterInventory(state: EncounterState, random: () => number): 
 export function createFullEncounter(options: { fullStartingInventory?: boolean; random?: () => number } = {}): EncounterState {
   const random = options.random ?? Math.random;
   const heroNames = ['Страж', 'Охотница', 'Паломник', 'Часовщица'];
-  const itemTypes = ['blade', 'hunter-bow', 'ashen-censer', 'lantern'];
+  const itemTypes = ['blade', 'dagger', 'desperate', 'lantern'];
   const heroes = heroNames.map((name, slot) => {
     const hero = createActor(`hero-${slot + 1}`, name, 'hero', slot, COMBAT_CONFIG.humanHealth);
     hero.items.push(createItem(itemTypes[slot]!, `item-${slot + 1}`, random));

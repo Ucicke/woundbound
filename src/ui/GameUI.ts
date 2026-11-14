@@ -27,7 +27,7 @@ export class GameUI {
   }
 
   private freshEncounter(): EncounterState {
-    const state = createFullEncounter({ fullStartingInventory: true });
+    const state = createFullEncounter();
     prepareEncounter(state);
     return state;
   }
