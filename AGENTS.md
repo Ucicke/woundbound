@@ -31,6 +31,11 @@ Woundbound — готический автобаттлер с менеджмен
 - Diablo is only a reference for varied item kinds (weapons, protection, charms, relics, tools, supplies). Never translate its equipment slots into Woundbound: items stay freely placeable shapes in the backpack grid. A class theme is descriptive and may guide starter curation, but it never restricts who can carry or receive an item.
 - For class atlases, generate a transparent 4×4 sheet with one complete distinct object per cell, then trim and pack into transparent 512px frames. Preserve the generated silhouette and aspect ratio in all inventory, reward, and drag previews; inspect at actual gameplay size.
 
+## Combat Actor Atlas Overlap
+
+- Check semantic content inside every actor frame, not only transparent outer borders: the generated hero-4 death pose spills into the rat row of the 6×8, 256px-frame atlas. Keep the first 111px of the rat row transparent in all six frames, leave the untouched source sheet intact, and run `node scripts/validate-pixel-assets.mjs --actors`; its rat-row spill guard catches regressions.
+- Whenever a spritesheet is generated, sliced, repacked, or edited, run `node scripts/validate-pixel-assets.mjs <option>` before using it in game. Choose `--actors` for combat actors or `--class-items` for the four runtime item atlases. If a sheet has no matching validator, add coverage before wiring or changing it. Also inspect every frame visually over a dark background at gameplay size to catch clipped silhouettes, neighboring-frame bleed, bad centering, and transparency artifacts that structural checks cannot detect.
+
 ## Local Browser Preview on Windows
 
 - For visual QA, use only the Codex built-in in-app browser. Do not launch or use Chrome for this project; access the live Vite URL through the in-app browser.

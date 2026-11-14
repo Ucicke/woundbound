@@ -1,7 +1,7 @@
 import type Phaser from 'phaser';
 import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape } from '../combat/inventory.ts';
 import { chooseHeroTarget, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
-import { ACTOR_ROWS, actorStateFrame, CLASS_ITEM_ART, type ActorSpriteId, type ActorSpriteState } from '../presentation/ArtCatalog.ts';
+import { ACTOR_ROWS, actorStateFrame, stoppedDollTransform, CLASS_ITEM_ART, type ActorSpriteId, type ActorSpriteState } from '../presentation/ArtCatalog.ts';
 import { itemArtBounds } from '../presentation/itemGeometry.ts';
 import type { GameUI } from './GameUI.ts';
 
@@ -590,10 +590,7 @@ export class PhaserHUD {
       const positionPhase = (x / Math.max(1, this.width)) * (y / Math.max(1, this.height)) * Math.PI * 5;
       view.motion.y = actor.status === 'dead' ? 0 : -0.8 - 0.8 * Math.sin(now / 360 + positionPhase + actorSeed * 0.17);
       view.container.setPosition(x, y).setDepth(y);
-      if (Math.abs(view.size - artSize) > .5) {
-        view.body.setDisplaySize(artSize, artSize);
-        view.size = artSize;
-      }
+      this.sizeActorBody(view, artSize);
       // Hero sheets face right; enemy sheets are authored facing left toward the party.
       view.body.setFlipX(actor.side === 'enemy');
       view.shadow.clear().fillStyle(0x09090c, .34).fillEllipse(0, artSize * .43, artSize * .62, artSize * .16);
@@ -692,6 +689,13 @@ export class PhaserHUD {
     return pose === 'dollStopped' ? 'doll-stopped' : 'actor-states';
   }
 
+  private sizeActorBody(view: BattlefieldActorView, size: number): void {
+    const transform = view.pose === 'dollStopped' ? stoppedDollTransform(view.archetype) : { scale: 1, x: 0, y: 0 };
+    const displaySize = size * transform.scale;
+    view.body.setDisplaySize(displaySize, displaySize).setPosition(size * transform.x, size * transform.y);
+    view.size = size;
+  }
+
   private syncActorPose(actor: Combatant, view: BattlefieldActorView, now: number): void {
     if (actor.status === 'dead') {
       if (view.pose !== 'death' || view.frame !== actorStateFrame(view.archetype, 'death')) {
@@ -714,6 +718,7 @@ export class PhaserHUD {
     view.poseUntil = this.now + durationMs;
     view.frame = actorStateFrame(view.archetype, pose);
     view.body.setTexture(this.actorPoseTexture(pose), view.frame);
+    if (view.size > 0) this.sizeActorBody(view, view.size);
   }
 
   private animateActorEvent(event: CombatEvent, positions: Map<string, { x: number; y: number; scale: number; actor: Combatant; hero: boolean; index: number }>): void {

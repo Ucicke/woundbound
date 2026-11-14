@@ -27,7 +27,7 @@ export class GameUI {
   }
 
   private freshEncounter(): EncounterState {
-    const state = createFullEncounter();
+    const state = createFullEncounter({ fullStartingInventory: true });
     prepareEncounter(state);
     return state;
   }
@@ -40,6 +40,11 @@ export class GameUI {
       this.run.random = () => 0;
       this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.wind = 0;
       this.prepareFastEncounter();
+      return;
+    }
+    if (scenario === 'visual-winding') {
+      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.wind = 0;
+      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
       return;
     }
     if (scenario === 'empty-backpack') { hero.items.splice(0); return; }

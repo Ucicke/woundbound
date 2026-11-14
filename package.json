@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "test": "vitest",
+    "test:balance": "vitest run tests/balance-simulation.test.ts --reporter=verbose",
     "typecheck": "tsc --noEmit --strict --skipLibCheck --lib ES2022,DOM --module ESNext --moduleResolution bundler --target ES2022 --allowImportingTsExtensions src/main.ts"
   },
   "dependencies": { "phaser": "4.2.1" },

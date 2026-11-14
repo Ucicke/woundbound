@@ -1,5 +1,6 @@
 import { createItem, EXPANSION_ITEM_IDS, itemDefinitionIds } from './items.ts';
 import { createActor, type CombatItem, type Combatant, type EncounterState } from './simulation.ts';
+import { COMBAT_CONFIG } from './config.ts';
 
 export type RoomKind = 'battle' | 'cache' | 'workshop' | 'event' | 'boss';
 export type RunStage = 'opening' | 'battle' | 'reward' | 'cleared' | 'route' | 'cache' | 'workshop' | 'event' | 'victory' | 'defeat';
@@ -11,19 +12,26 @@ export interface RunState {
 
 function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
   if (boss) {
-    const leader = createActor(`room-${room}-boss`, 'Заводной архонт', 'enemy', 0, 180, 'lowest');
-    leader.isBoss = true; leader.attackDamage = 8; leader.attackCooldownMs = leader.attackRemainingMs = 1800; leader.reach = 'far';
-    const guard = createActor(`room-${room}-guard`, 'Сломанный автоматон', 'enemy', 1, 55);
-    guard.attackDamage = 5; guard.attackCooldownMs = guard.attackRemainingMs = 2100;
+    // The final encounter uses the same floor curve as ordinary enemies, with a steeper health slope.
+    const roomsAfterOpening = Math.max(0, room - 1);
+    const bossTier = Math.floor(roomsAfterOpening / 3);
+    const leader = createActor(`room-${room}-boss`, 'Заводной архонт', 'enemy', 0, COMBAT_CONFIG.bossHealth + roomsAfterOpening * COMBAT_CONFIG.bossHealthPerRoom, 'lowest');
+    leader.isBoss = true; leader.attackDamage = COMBAT_CONFIG.bossAttackDamage + bossTier;
+    leader.attackCooldownMs = leader.attackRemainingMs = Math.max(1800, COMBAT_CONFIG.enemyAttackCooldownMs + 500 - roomsAfterOpening * COMBAT_CONFIG.enemyAttackCooldownReductionPerRoomMs); leader.reach = 'far';
+    const guard = createActor(`room-${room}-guard`, 'Сломанный автоматон', 'enemy', 1, COMBAT_CONFIG.bossGuardHealth + roomsAfterOpening * COMBAT_CONFIG.bossGuardHealthPerRoom);
+    guard.attackDamage = COMBAT_CONFIG.bossGuardAttackDamage + bossTier;
+    guard.attackCooldownMs = guard.attackRemainingMs = Math.max(1800, COMBAT_CONFIG.enemyAttackCooldownMs + 800 - roomsAfterOpening * COMBAT_CONFIG.enemyAttackCooldownReductionPerRoomMs);
     return [leader, guard];
   }
   const names = ['Чумная крыса', 'Культист', 'Сломанный автоматон'];
-  const count = room === 1 ? 4 : 2 + ((room + variant) % 3);
+  const count = 4;
   return Array.from({ length: count }, (_, slot) => {
     const kind = Math.max(0, Math.min(names.length - 1, variant));
-    const enemy = createActor(`room-${room}-enemy-${slot}`, names[kind], 'enemy', slot, 35 + Math.floor((room - 1) / 3) * 10 + kind * 5, kind === 1 ? 'lowest' : 'front');
-    enemy.attackDamage = 3 + Math.floor((room - 1) / 3) + (kind === 2 ? 1 : 0);
-    enemy.attackCooldownMs = enemy.attackRemainingMs = 1900 + slot * 130;
+    // Health rises every room; damage tiers and faster attacks make later acts pressure the whole party.
+    const health = COMBAT_CONFIG.enemyStartingHealth + (room - 1) * COMBAT_CONFIG.enemyHealthPerRoom + kind * COMBAT_CONFIG.enemyHealthPerTier;
+    const enemy = createActor(`room-${room}-enemy-${slot}`, names[kind], 'enemy', slot, health, kind === 1 ? 'lowest' : 'front');
+    enemy.attackDamage = COMBAT_CONFIG.enemyStartingDamage + Math.floor((room - 1) / COMBAT_CONFIG.enemyDamageEveryRooms) + (kind === 2 ? 1 : 0);
+    enemy.attackCooldownMs = enemy.attackRemainingMs = Math.max(1600, COMBAT_CONFIG.enemyAttackCooldownMs - (room - 1) * COMBAT_CONFIG.enemyAttackCooldownReductionPerRoomMs + slot * COMBAT_CONFIG.enemyAttackStaggerMs);
     enemy.reach = kind === 1 ? 'far' : 'near';
     return enemy;
   });
@@ -63,7 +71,7 @@ function makeOffers(run: RunState): void {
     const pool = index === 0 ? expansionIds : ids;
     const [id] = pool.splice(Math.floor(roll * pool.length), 1);
     if (index === 0) ids.splice(ids.indexOf(id!), 1);
-    run.offers.push(createItem(id!, `reward-${run.room}-${index}`));
+    run.offers.push(createItem(id!, `reward-${run.room}-${index}`, run.random));
   }
 }
 
