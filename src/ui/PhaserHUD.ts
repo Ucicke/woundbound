@@ -11,7 +11,7 @@ import { TooltipLayer, type ItemTooltipContent } from './TooltipLayer.ts';
 
 export interface UIZone {
   x: number; y: number; width: number; height: number;
-  action?: string; value?: string; itemId?: string; actorId?: string; heroId?: string; cell?: number; reward?: boolean; stash?: boolean;
+  action?: string; value?: string; itemId?: string; actorId?: string; heroId?: string; cell?: number; reward?: boolean; stash?: boolean; floorDrop?: boolean;
 }
 export interface DragPreview { item: CombatItem; x: number; y: number; heroId?: string; anchor?: number; valid?: boolean }
 
@@ -450,7 +450,7 @@ export class PhaserHUD {
       const gridY = boardY + boardSize * (layout.tray[1] + layout.tray[3] / 2) - gridSize / 2;
       const availableInfoWidth = Math.max(1, gridX - (boardX + boardSize * .07));
       const infoSize = Math.min(38, boardSize * .13, Math.max(1, availableInfoWidth - 4));
-      const infoX = boardX + boardSize * .07 + (availableInfoWidth - infoSize) / 2, infoY = gridY + cell * .2;
+      const infoX = boardX + boardSize * .07 + (availableInfoWidth - infoSize) / 2, infoY = gridY + (gridSize - infoSize) / 2;
       this.button('', infoX, infoY, infoSize, infoSize, 'hero-info', hero.id);
       const infoGlyph = this.scene.add.text(infoX + infoSize / 2, infoY + infoSize / 2, 'i', {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(infoSize * .67)}px`,
@@ -700,7 +700,7 @@ export class PhaserHUD {
   }
 
   private room(drag?: DragPreview): void {
-    const run = this.ui.run, state = this.ui.state;
+    const run = this.ui.run;
     const title = run.stage === 'victory' ? 'Архонт повержен' : run.stage === 'defeat' ? 'Конец пути' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? 'Тишина после боя' : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
     this.panelTexture(this.right.x + 5, this.right.y + 3, this.right.width - 10, 27);
     if (run.stage !== 'opening') {
@@ -715,11 +715,6 @@ export class PhaserHUD {
     else if (run.stage === 'event') this.event();
     else if (run.stage === 'cleared') this.cleared();
     else if (run.stage === 'victory' || run.stage === 'defeat') { this.battlefield(); this.ending(); }
-    if (drag && !this.ui.run.offers.includes(drag.item) && (state.phase === 'preparation' || state.phase === 'result') && run.stage !== 'victory' && run.stage !== 'defeat') {
-      const x = this.right.x + 12, y = this.right.y + this.right.height - 110, w = this.right.width - 24;
-      this.panelTexture(x, y, w, 48); this.text('Оставить вещь на полу', x + w / 2, y + 15, 13, '#efd4a8', w - 12, .5);
-      this.zones.push({ x, y, width: w, height: 48, action: 'floor-drop' });
-    }
     if (drag?.heroId && drag.anchor !== undefined) this.drawDropFootprint(drag);
   }
 
@@ -1189,16 +1184,13 @@ export class PhaserHUD {
 
   private cleared(): void {
     const x = this.right.x + 12, w = this.right.width - 24;
-    let y = this.right.y + 45;
-    this.text(this.ui.state.floor.length ? 'Павшие куклы оставили вещи. Разложите их после боя.' : 'Враги повержены.', x, y, this.width < 820 ? 9 : 13, '#e1cfaf', w);
-    y += 32;
+    const floorBottom = this.right.y + this.right.height - 60;
+    this.zones.push({ x: this.field.x, y: this.field.y, width: this.field.width, height: Math.max(0, floorBottom - this.field.y), action: 'floor-drop', floorDrop: true });
+    const y = this.right.y + 45;
     if (this.ui.state.floor.length) {
       this.text(`НА ПОЛУ · ${this.ui.state.floor.length}`, x, y, 11, '#f0cc86', w);
-      y = this.drawLooseItems(this.ui.state.floor, x, y + 19, w) + 9;
-    }
-    const dropY = this.right.y + this.right.height - 112;
-    this.panelTexture(x, dropY, w, 42); this.text('Перетащите вещь сюда, чтобы оставить на полу', x + w / 2, dropY + 13, 11, '#d7c4a8', w - 12, .5);
-    this.zones.push({ x, y: dropY, width: w, height: 42, action: 'floor-drop' });
+      this.drawLooseItems(this.ui.state.floor, x, y + 19, w);
+    } else this.text('Враги повержены.', x, y, this.width < 820 ? 9 : 13, '#e1cfaf', w);
     this.button('Выбрать следующую комнату', x, this.right.y + this.right.height - 60, w, 50, 'route', '', true);
   }
 
@@ -1209,7 +1201,7 @@ export class PhaserHUD {
       const bx = x + index % columns * (size + gap), by = y + Math.floor(index / columns) * (size + gap);
       this.card(bx, by, size, size, item.name);
       this.itemImage(item, bx + size / 2, by + size / 2, size - 4);
-      this.zones.push({ x: bx, y: by, width: size, height: size, action: 'item', value: item.id, itemId: item.id });
+      this.zones.push({ x: bx, y: by, width: size, height: size, action: 'item', value: item.id, itemId: item.id, floorDrop: true });
     });
     return y + Math.ceil(items.length / columns) * (size + gap);
   }

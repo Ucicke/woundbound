@@ -296,8 +296,9 @@ export class CombatScene extends Phaser.Scene {
           const valid = canPlaceItem(this.ui.state, drag.item, zone.heroId, anchor);
           if (valid && this.ui.dropItem(drag.item.id, zone.heroId, anchor, drag.reward)) this.gameAudio.play('ui');
           else this.restoreRotation(drag);
-        } else if (zone?.action === 'floor-drop') {
-          this.ui.dropToStash(drag.item.id);
+        } else if (zone?.floorDrop && !drag.reward) {
+          if (this.ui.dropToStash(drag.item.id)) this.gameAudio.play('ui');
+          else this.restoreRotation(drag);
         } else if (zone?.action === 'claim' && drag.reward) {
           this.ui.action('claim', drag.item.id);
         } else this.restoreRotation(drag);
@@ -309,6 +310,7 @@ export class CombatScene extends Phaser.Scene {
       this.drag = undefined; this.forceDraw(); return;
     }
     if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) {
+      if (zone.action === 'floor-drop') return;
       if (zone.action === 'begin-run') { this.beginDescent(); return; }
       if (zone.action === 'fullscreen') { if (this.scale.isFullscreen) this.scale.stopFullscreen(); else this.scale.startFullscreen(); return; }
       if (zone.action === 'wind' && !this.ui.state.heroes.some(hero => hero.status === 'human' || hero.status === 'active')) {
