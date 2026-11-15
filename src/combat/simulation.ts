@@ -5,11 +5,12 @@ import { defaultPuppetForm, getPuppetForm, getPuppetItemRules, getPuppetWindDrai
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest' | 'rear';
 export type Reach = 'near' | 'far';
-export type CombatRole = 'guard' | 'archer' | 'rogue' | 'mage' | 'enemy';
+export type CombatRole = 'guard' | 'archer' | 'support' | 'mechanic' | 'enemy';
 export type ItemRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
 export type ItemClassAffinity = HeroClass;
 export type ItemCategory = 'weapon' | 'protection' | 'jewelry' | 'relic' | 'tool' | 'consumable' | 'ammo';
 export const HERO_ITEM_AFFINITIES: readonly ItemClassAffinity[] = ['guard', 'huntress', 'pilgrim', 'clockmaker'];
+const CLASS_ROLES: Record<HeroClass, CombatRole> = { guard: 'guard', huntress: 'archer', pilgrim: 'support', clockmaker: 'mechanic' };
 export interface ItemPassiveBonuses { armor?: number; damage?: number; cooldownFactor?: number; healing?: number; wind?: number }
 export interface HeroAttributes { strength: number; dexterity: number; constitution: number; intellect: number; wisdom: number; presence: number }
 const CLASS_ATTRIBUTES: Record<HeroClass, HeroAttributes> = {
@@ -41,8 +42,8 @@ export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; ene
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
-  const role: CombatRole = side === 'enemy' ? 'enemy' : id === 'hero-1' ? 'guard' : id === 'hero-2' ? 'archer' : id === 'hero-3' ? 'rogue' : 'mage';
   const heroClass = side === 'hero' ? HERO_ITEM_AFFINITIES[slot] ?? 'guard' : undefined;
+  const role: CombatRole = heroClass ? CLASS_ROLES[heroClass] : 'enemy';
   return { id, name, side, slot, hp, maxHp: hp, status: side === 'hero' ? 'human' : 'enemy', items: [], targetPolicy: policy, attackDamage: side === 'enemy' ? 6 : 0, attackCooldownMs: 1800, attackRemainingMs: 1800, durability: 100, maxDurability: 100, windUpCharge: 0, maxWindUp: COMBAT_CONFIG.maxWind, rebirthMs: 0, role,
     attributes: { ...(heroClass ? CLASS_ATTRIBUTES[heroClass] : { strength: 10, dexterity: 10, constitution: 10, intellect: 10, wisdom: 10, presence: 10 }) }, heroClass, isPuppet: false, puppetBranch: null, puppetFormId: null, pendingPuppetFormId: heroClass ? defaultPuppetForm(heroClass).id : null,
     puppetPassiveState: { itemActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 } };
@@ -69,9 +70,8 @@ export function transformHeroToPuppet(hero: Combatant, formId: PuppetFormId | nu
 }
 
 /** Presentation reads intent only: combat targeting and damage never depend on Canvas coordinates. */
-export function projectRoleIntent(actor: Combatant, target?: Combatant): { lane: 'front' | 'rear' | 'flank'; hidden: boolean; targetId?: string } {
+export function projectRoleIntent(actor: Combatant, target?: Combatant): { lane: 'front' | 'rear'; hidden: boolean; targetId?: string } {
   if (actor.side === 'enemy') return { lane: 'front', hidden: false };
-  if (actor.role === 'rogue') return { lane: 'flank', hidden: actor.status === 'human' || actor.status === 'active', targetId: target?.id };
   return { lane: actor.role === 'guard' ? 'front' : 'rear', hidden: false, targetId: target?.id };
 }
 

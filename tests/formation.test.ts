@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
-import { chooseEnemyTarget, chooseHeroTarget, evaluateItem, prepareEncounter, projectRoleIntent, startBattle, stepEncounter, swapHeroPositions } from '../src/combat/simulation.ts';
+import { chooseEnemyTarget, chooseHeroTarget, createActor, evaluateItem, prepareEncounter, projectRoleIntent, startBattle, stepEncounter, swapHeroPositions } from '../src/combat/simulation.ts';
 
 describe('formation and reach', () => {
   it('swaps identities and equipment atomically only during preparation', () => {
@@ -52,12 +52,14 @@ describe('formation and reach', () => {
     expect(state.events.some(event => event.actorId === enemy.id && event.targetId === hero.id)).toBe(true);
   });
 
-  it('projects front, rear and hidden flank intentions without changing item targeting', () => {
+  it('assigns the four class roles and places only the guard in front', () => {
     const state = createFullEncounter();
     const target = state.enemies[0];
+    expect(state.heroes.map(hero => hero.role)).toEqual(['guard', 'archer', 'support', 'mechanic']);
+    expect(createActor('custom-id', 'Паломник', 'hero', 2, 10).role).toBe('support');
     expect(projectRoleIntent(state.heroes[0], target)).toMatchObject({ lane: 'front', hidden: false, targetId: target.id });
     expect(projectRoleIntent(state.heroes[1], target)).toMatchObject({ lane: 'rear', hidden: false, targetId: target.id });
     expect(projectRoleIntent(state.heroes[3], target)).toMatchObject({ lane: 'rear', hidden: false, targetId: target.id });
-    expect(projectRoleIntent(state.heroes[2], target)).toMatchObject({ lane: 'flank', hidden: true, targetId: target.id });
+    expect(projectRoleIntent(state.heroes[2], target)).toMatchObject({ lane: 'rear', hidden: false, targetId: target.id });
   });
 });

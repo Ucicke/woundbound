@@ -820,8 +820,12 @@ export class PhaserHUD {
     const now = Math.floor(this.now / 90) * 90;
     const action = this.ui.latestAction && now < this.ui.highlightUntil ? this.ui.latestAction : undefined;
     const enemyTarget = this.ui.state.enemies.find(enemy => enemy.status === 'enemy');
-    const heroFormation = new Map<string, { lane: 'front' | 'rear' | 'flank'; rank: number; count: number }>();
-    const laneCounts = { front: 0, rear: 0, flank: 0 };
+    const allActors = [...this.ui.state.heroes, ...this.ui.state.enemies];
+    const actionTarget = action && allActors.find(candidate => candidate.id === action.targetId);
+    const actionItem = action?.kind === 'item' ? this.ui.state.heroes.flatMap(hero => hero.items).find(item => item.id === action.sourceId) : undefined;
+    const friendlyAction = actionItem?.effect === 'heal' || actionItem?.effect === 'wind';
+    const heroFormation = new Map<string, { lane: 'front' | 'rear'; rank: number; count: number }>();
+    const laneCounts = { front: 0, rear: 0 };
     for (const hero of [...this.ui.state.heroes].sort((a, b) => a.slot - b.slot)) {
       const lane = projectRoleIntent(hero, enemyTarget).lane;
       heroFormation.set(hero.id, { lane, rank: laneCounts[lane]++, count: 0 });
@@ -831,18 +835,15 @@ export class PhaserHUD {
     const actorPosition = (actor: Combatant, hero: boolean, index: number): { x: number; y: number; scale: number } => {
       const intent = projectRoleIntent(actor, enemyTarget);
       const formation = hero ? heroFormation.get(actor.id) : undefined;
-      const depth = hero ? (intent.lane === 'front' ? .74 : intent.lane === 'flank' ? .56 : .49) : .38 + Math.floor(index / 2) * .28 + (index % 2) * .12;
+      const depth = hero ? (intent.lane === 'front' ? .74 : .49) : .38 + Math.floor(index / 2) * .28 + (index % 2) * .12;
       const baseY = ground.top + (ground.bottom - ground.top) * Math.max(.08, Math.min(.95, depth));
       let x = hero
-        ? ground.left + (ground.right - ground.left) * (intent.lane === 'front' ? .55 + ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * .1 : intent.lane === 'rear' ? .34 + ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * .12 : .16)
+        ? ground.left + (ground.right - ground.left) * (intent.lane === 'front' ? .55 + ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * .1 : .34 + ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * .12)
         : ground.right - (ground.right - ground.left) * (.2 + (index % 2) * .15 + Math.floor(index / 2) * .04);
-      let y = baseY + (hero ? ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * this.field.height * .035 : 0);
-      if (hero && intent.lane === 'flank' && enemyTarget) {
-        const activeRogue = action?.actorId === actor.id;
-        x = activeRogue ? ground.right - (ground.right - ground.left) * .32 : ground.left + (ground.right - ground.left) * .16;
-        y = activeRogue ? ground.top + (ground.bottom - ground.top) * .72 : ground.top + (ground.bottom - ground.top) * .49;
-      }
-      const lunge = action?.actorId === actor.id && (actor.reach ?? 'near') === 'near' ? (hero ? 1 : -1) * this.field.width * .085 * Math.sin(Math.PI * (1 - (this.ui.highlightUntil - now) / 700)) : 0;
+      const y = baseY + (hero ? ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * this.field.height * .035 : 0);
+      const hostile = actionTarget && actionTarget.side !== actor.side;
+      const nearFront = hero ? actor.role === 'guard' : (actor.reach ?? 'near') === 'near';
+      const lunge = action?.actorId === actor.id && hostile && nearFront ? (hero ? 1 : -1) * this.field.width * .085 * Math.sin(Math.PI * (1 - (this.ui.highlightUntil - now) / 700)) : 0;
       return { x: Math.max(ground.left, Math.min(ground.right, x + lunge)), y: Math.max(ground.top, Math.min(ground.bottom, y)), scale: .76 + (baseY - ground.top) / Math.max(1, ground.bottom - ground.top) * .44 };
     };
     const units = [...this.ui.state.heroes.filter(actor => !this.priorRoomDead.has(actor.id)).map((actor, index) => ({ actor, hero: true, index })), ...this.ui.state.enemies.map((actor, index) => ({ actor, hero: false, index }))];
@@ -892,7 +893,6 @@ export class PhaserHUD {
       view.meter.setVisible(actor.status !== 'rebirthing' && actor.status !== 'dead');
       view.meter.fillStyle(hero ? 0x79c36b : 0xe05b59, 1).fillRoundedRect(-artSize * .30, artSize * .45, artSize * .60 * Math.max(0, Math.min(1, shown / Math.max(1, max))), this.width < 820 ? 5 : 7, 3);
       view.body.setAlpha(actor.status === 'dead' ? .56 : actor.status === 'rebirthing' ? .78 : 1);
-      const rogueFading = hero && actor.role === 'rogue' && action?.actorId === actor.id;
       const actorClass = hero ? heroClassForActor(actor) : undefined;
       const dollTint = actorClass ? classCardThemes[actorClass].dollTint : 0xffffff;
       if (actor.status === 'stopped') {
@@ -901,9 +901,8 @@ export class PhaserHUD {
       }
       else if (actor.status === 'active') view.body.setTint(mixTint(0xffffff, dollTint, .82));
       else if (action?.actorId === actor.id) view.body.setTint(0xffe0a0);
-      else if (action?.targetId === actor.id) view.body.setTint(0xff9a84);
+      else if (action?.targetId === actor.id) view.body.setTint(friendlyAction ? 0xa8e3aa : 0xff9a84);
       else view.body.clearTint();
-      if (rogueFading) view.body.setAlpha(.45 + .35 * Math.abs(Math.sin(now / 110)));
       view.label.setText(actor.isBoss ? actor.name : '').setVisible(Boolean(actor.isBoss)).setPosition(0, -artSize * .78);
       view.key.clear();
       const doll = actor.status === 'active' || actor.status === 'stopped';
@@ -1050,6 +1049,9 @@ export class PhaserHUD {
     if (event.kind !== 'item' && event.kind !== 'enemy') return;
     const source = this.actorViews.get(event.actorId);
     const sourcePos = positions.get(event.actorId), targetPos = positions.get(event.targetId);
+    // Healing and winding are support actions, not strikes against an ally.
+    const item = event.kind === 'item' ? this.ui.state.heroes.flatMap(hero => hero.items).find(candidate => candidate.id === event.sourceId) : undefined;
+    if (item?.effect === 'heal' || item?.effect === 'wind') return;
     if (source && event.sequence && event.sequence > source.lastMotionSequence && targetPos && sourcePos) {
       source.lastMotionSequence = event.sequence;
       if (this.now >= source.motionUntil) {
