@@ -21,7 +21,7 @@ describe('human to doll lifecycle', () => {
     expect(hero.durability).toBe(hero.maxDurability);
     expect(hero.windUpCharge).toBe(0);
     expect(hero.items[0].remainingMs).toBe(hero.items[0].cooldownMs);
-    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[2].id);
+    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(hero.id);
     state.heroes.slice(1).forEach(other => { other.status = 'dead'; });
     expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(hero.id);
   });
@@ -36,7 +36,7 @@ describe('human to doll lifecycle', () => {
     expect(applyEffect(state, hero.id, 'heal', 10)).toBe(true);
     for (const kind of ['poison', 'bleeding', 'fear'] as const) expect(applyEffect(state, hero.id, kind, 10)).toBe(false);
     expect([hero.windUpCharge, hero.durability]).toEqual([32, 82]);
-    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(state.heroes[2].id);
+    expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(hero.id);
     state.heroes.slice(1).forEach(other => { other.status = 'dead'; });
     expect(chooseHeroTarget(state.heroes, 'front')?.id).toBe(hero.id);
   });

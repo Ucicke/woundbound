@@ -11,7 +11,7 @@ export type ItemClassAffinity = HeroClass;
 export type ItemCategory = 'weapon' | 'protection' | 'jewelry' | 'relic' | 'tool' | 'consumable' | 'ammo';
 export const HERO_ITEM_AFFINITIES: readonly ItemClassAffinity[] = ['guard', 'huntress', 'pilgrim', 'clockmaker'];
 const CLASS_ROLES: Record<HeroClass, CombatRole> = { guard: 'guard', huntress: 'archer', pilgrim: 'support', clockmaker: 'mechanic' };
-export interface ItemPassiveBonuses { armor?: number; damage?: number; cooldownFactor?: number; healing?: number; wind?: number }
+export interface ItemPassiveBonuses { armor?: number; damage?: number; damageReach?: Reach; cooldownFactor?: number; healing?: number; wind?: number }
 export interface HeroAttributes { strength: number; dexterity: number; constitution: number; intellect: number; wisdom: number; presence: number }
 const CLASS_ATTRIBUTES: Record<HeroClass, HeroAttributes> = {
   guard: { strength: 16, dexterity: 10, constitution: 14, intellect: 10, wisdom: 10, presence: 10 },
@@ -37,7 +37,7 @@ export interface Combatant {
   heroClass?: HeroClass; isPuppet: boolean; puppetBranch: PuppetBranch | null; puppetFormId: PuppetFormId | null;
   pendingPuppetFormId: PuppetFormId | null; puppetPassiveState: PuppetPassiveState;
 }
-export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state' | 'wind'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string; defeatedTarget?: boolean; transition?: 'rebirth' | 'puppet' | 'permadeath' }
+export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state' | 'wind'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string; defeatedTarget?: boolean; transition?: 'rebirth' | 'puppet' | 'permadeath'; droppedItems?: Array<{ id: string; cell: number }> }
 export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; bossEnraged: boolean; combatEnraged: boolean; windRandomState: number }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
@@ -46,7 +46,7 @@ export function createActor(id: string, name: string, side: 'hero' | 'enemy', sl
   const role: CombatRole = heroClass ? CLASS_ROLES[heroClass] : 'enemy';
   return { id, name, side, slot, hp, maxHp: hp, status: side === 'hero' ? 'human' : 'enemy', items: [], targetPolicy: policy, attackDamage: side === 'enemy' ? 6 : 0, attackCooldownMs: 1800, attackRemainingMs: 1800, durability: 100, maxDurability: 100, windUpCharge: 0, maxWindUp: COMBAT_CONFIG.maxWind, rebirthMs: 0, role,
     attributes: { ...(heroClass ? CLASS_ATTRIBUTES[heroClass] : { strength: 10, dexterity: 10, constitution: 10, intellect: 10, wisdom: 10, presence: 10 }) }, heroClass, isPuppet: false, puppetBranch: null, puppetFormId: null, pendingPuppetFormId: heroClass ? defaultPuppetForm(heroClass).id : null,
-    puppetPassiveState: { itemActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 } };
+    puppetPassiveState: { itemActivations: 0, mechanicalActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 } };
 }
 
 export function heroClassForActor(actor: Combatant): ItemClassAffinity | undefined {
@@ -64,7 +64,7 @@ export function transformHeroToPuppet(hero: Combatant, formId: PuppetFormId | nu
   hero.maxDurability = hero.durability = form.maxDurability;
   hero.maxWindUp = form.maxWindUp;
   hero.windUpCharge = 0;
-  hero.puppetPassiveState = { itemActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 };
+  hero.puppetPassiveState = { itemActivations: 0, mechanicalActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 };
   hero.status = 'stopped';
   return true;
 }
@@ -123,11 +123,13 @@ function reachable(actors: Combatant[], slot: number, reach: Reach, rank: (actor
 
 export function chooseHeroTarget(heroes: Combatant[], policy: TargetPolicy, slot = 0, reach: Reach = 'far'): Combatant | undefined {
   const targetable = heroes.filter(actor => actor.status === 'human' || actor.status === 'stopped' || actor.status === 'active');
-  const living = targetable.filter(actor => actor.status === 'human');
-  const alive = living.length ? living : targetable;
+  // A functioning guard holds the frontline; a stopped doll cannot intercept living allies.
+  const activeGuard = targetable.find(actor => actor.role === 'guard' && actor.status === 'active');
+  const humans = targetable.filter(actor => actor.status === 'human');
+  const candidates = reach === 'near' && activeGuard ? [activeGuard] : humans.length && reach === 'near' ? humans : targetable;
   const health = (actor: Combatant): number => actor.status === 'human' ? actor.hp : actor.durability;
-  const rank = (actor: Combatant): number => ({ 'hero-1': 0, 'hero-3': 1, 'hero-2': 2, 'hero-4': 3 } as Record<string, number>)[actor.id] ?? actor.slot;
-  return reachable(alive, slot, reach, rank).sort((a, b) => policy === 'lowest' ? health(a) - health(b) || rank(a) - rank(b) : policy === 'rear' ? rank(b) - rank(a) : rank(a) - rank(b))[0];
+  const rank = (actor: Combatant): number => ({ guard: 0, support: 1, archer: 2, mechanic: 3, enemy: 4 })[actor.role] * 10 + actor.slot;
+  return reachable(candidates, slot, reach, rank).sort((a, b) => policy === 'lowest' ? health(a) - health(b) || rank(a) - rank(b) : policy === 'rear' ? rank(b) - rank(a) : rank(a) - rank(b))[0];
 }
 
 export function chooseEnemyTarget(enemies: Combatant[], policy: TargetPolicy, slot = 0, reach: Reach = 'far'): Combatant | undefined {
@@ -189,7 +191,22 @@ function rollManualWindAmount(state: EncounterState, doll: Combatant): number {
   random ^= random << 5;
   state.windRandomState = random >>> 0;
   const roll = 5 + state.windRandomState % 16;
-  return roll;
+  return getPuppetForm(doll.puppetFormId)?.passiveId === 'penitent-winding' ? Math.round(roll * 1.5) : roll;
+}
+
+export const MAX_ARMOR = 8;
+export function heroArmor(target: Combatant): number {
+  if (target.side !== 'hero') return 0;
+  const affinity = heroClassForActor(target);
+  const equipment = Math.round(target.items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * (affinity && item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1), 0));
+  return Math.max(0, Math.min(MAX_ARMOR, equipment + (target.isPuppet ? getPuppetForm(target.puppetFormId)?.armor ?? 0 : 0) + attributeModifier(target.attributes.constitution)));
+}
+
+function dropDeadHeroItems(state: EncounterState, hero: Combatant): Array<{ id: string; cell: number }> {
+  const dropped = hero.items.map(item => ({ id: item.id, cell: item.cell ?? 0 }));
+  for (const item of hero.items.splice(0)) { delete item.cell; state.floor.push(item); }
+  state.item = state.heroes[0]?.items[0] ?? null;
+  return dropped;
 }
 
 export function applyEffect(state: EncounterState, targetId: string, kind: 'damage' | 'heal' | 'poison' | 'bleeding' | 'fear' | 'wind', amount: number): boolean {
@@ -209,10 +226,8 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
   }
   if (isDoll && kind !== 'damage') return false;
   if (kind !== 'damage') return true;
-  const ownerAffinity = heroClassForActor(target);
-  const equipmentArmor = target.side === 'hero' ? Math.round(target.items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * (item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1), 0)) : 0;
   const form = target.isPuppet ? getPuppetForm(target.puppetFormId) : undefined;
-  const armor = target.side === 'hero' ? Math.min(8, equipmentArmor + (form?.armor ?? 0) + attributeModifier(target.attributes.constitution)) : 0;
+  const armor = heroArmor(target);
   const damage = Math.max(1, Math.round(Math.max(0, amount - armor) * (isDoll ? form?.damageTakenMultiplier ?? 1 : 1)));
   if (isDoll) {
     target.durability = Math.max(0, target.durability - damage);
@@ -220,9 +235,8 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
     if (target.durability === 0) {
       target.status = 'dead';
       target.windUpCharge = 0;
-      for (const item of target.items.splice(0)) { delete item.cell; state.floor.push(item); }
-      state.item = state.heroes[0]?.items[0] ?? null;
-      record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: target.name, targetId: target.id, targetName: target.name, amount: 0, transition: 'permadeath', message: `${target.name}: окончательная гибель` });
+      const droppedItems = dropDeadHeroItems(state, target);
+      record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: target.name, targetId: target.id, targetName: target.name, amount: 0, transition: 'permadeath', droppedItems, message: `${target.name}: окончательная гибель` });
       resolveOutcome(state);
     } else {
       if (form?.passiveId === 'bastion-counterwind') {
@@ -245,6 +259,15 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
 }
 
 export function stepEncounter(state: EncounterState, deltaMs: number): void {
+  if (state.outcome === 'defeat') return;
+  for (const hero of state.heroes) {
+    if (hero.status !== 'rebirthing') continue;
+    hero.rebirthMs = Math.max(0, hero.rebirthMs - Math.max(0, deltaMs));
+    if (hero.rebirthMs === 0 && transformHeroToPuppet(hero)) {
+      const form = getPuppetForm(hero.puppetFormId)!;
+      record(state, { kind: 'state', actorId: hero.id, sourceId: hero.id, sourceName: form.name, targetId: hero.id, targetName: hero.name, amount: 0, transition: 'puppet', message: `${hero.name} перерождается: ${form.name}` });
+    }
+  }
   if (state.phase !== 'combat' || state.outcome !== 'ongoing') return;
   state.elapsedMs += deltaMs;
   const boss = state.enemies.find(enemy => enemy.isBoss);
@@ -258,13 +281,7 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     record(state, { kind: 'state', actorId: boss.id, sourceId: boss.id, sourceName: boss.name, targetId: boss.id, targetName: boss.name, amount: 0, message: `${boss.name} входит в ярость` });
   }
   for (const hero of state.heroes) {
-    if (hero.status === 'rebirthing') {
-      hero.rebirthMs = Math.max(0, hero.rebirthMs - deltaMs);
-      if (hero.rebirthMs === 0 && transformHeroToPuppet(hero)) {
-        const form = getPuppetForm(hero.puppetFormId)!;
-        record(state, { kind: 'state', actorId: hero.id, sourceId: hero.id, sourceName: form.name, targetId: hero.id, targetName: hero.name, amount: 0, transition: 'puppet', message: `${hero.name} перерождается: ${form.name}` });
-      }
-    } else if (hero.status === 'active') {
+    if (hero.status === 'active') {
       hero.windUpCharge = Math.max(0, hero.windUpCharge - getPuppetWindDrain(hero) * deltaMs / 1000);
       if (hero.windUpCharge === 0) hero.status = 'stopped';
     }
@@ -285,7 +302,7 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       const winding = item.effect === 'wind';
       const actionAmount = Math.round((winding ? (item.windAmount ?? item.damage) + bonuses.wind
         : healing ? item.damage + bonuses.healing
-        : item.damage + bonuses.damage) * (item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1) * puppetRules.outputMultiplier * itemAttributeFactor(hero, item));
+        : item.damage + bonuses.damage) * (affinity && item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1) * puppetRules.outputMultiplier * itemAttributeFactor(hero, item));
       const triggered = applyEffect(state, target.id, winding ? 'wind' : healing ? 'heal' : 'damage', actionAmount);
       const dealt = healing ? (target.status === 'human' ? target.hp - healthBefore : target.durability - durabilityBefore) : winding ? target.windUpCharge - windBefore : healthBefore - target.hp;
       record(state, { kind: 'item', actorId: hero.id, sourceId: item.id, sourceName: item.name, targetId: target.id, targetName: target.name, amount: dealt,
@@ -293,7 +310,7 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
         message: `${item.name} → ${target.name}: ${dealt} ${healing ? 'лечения' : winding ? 'завода' : 'урона'}` });
       item.remainingMs = item.cooldownMs * bonuses.cooldownFactor * puppetRules.cooldownMultiplier * attributeCooldownFactor(hero);
       if (triggered && hero.isPuppet) {
-        registerPuppetItemTrigger(hero, !healing && !winding && target.side === 'enemy' ? target.id : undefined);
+        registerPuppetItemTrigger(hero, item, !healing && !winding && target.side === 'enemy' ? target.id : undefined);
         hero.windUpCharge = Math.max(0, hero.windUpCharge - puppetRules.chargeCost);
         hero.windUpCharge = Math.min(hero.maxWindUp, hero.windUpCharge + puppetRules.chargeRefund);
         if (puppetRules.durabilityRepair) hero.durability = Math.min(hero.maxDurability, hero.durability + puppetRules.durabilityRepair);
@@ -349,9 +366,8 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       doll.durability = Math.max(0, doll.durability - 1);
       if (doll.durability === 0) {
         doll.status = 'dead'; doll.windUpCharge = 0;
-        for (const item of doll.items.splice(0)) { delete item.cell; state.floor.push(item); }
-        state.item = state.heroes.find(hero => hero.status !== 'dead')?.items[0] ?? null;
-        record(state, { kind: 'state', actorId: doll.id, sourceId: doll.id, sourceName: doll.name, targetId: doll.id, targetName: doll.name, amount: 0, transition: 'permadeath', message: `${doll.name}: окончательная гибель` });
+        const droppedItems = dropDeadHeroItems(state, doll);
+        record(state, { kind: 'state', actorId: doll.id, sourceId: doll.id, sourceName: doll.name, targetId: doll.id, targetName: doll.name, amount: 0, transition: 'permadeath', droppedItems, message: `${doll.name}: окончательная гибель` });
         resolveOutcome(state);
         if (state.outcome !== 'ongoing') break;
         continue;

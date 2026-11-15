@@ -41,7 +41,7 @@ export function occupiedCells(item: CombatItem, cell: number): number[] | null {
 }
 
 export function findPlacement(state: EncounterState, item: CombatItem, heroId: string): number | null {
-  const hero = state.heroes.find(candidate => candidate.id === heroId);
+  const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
   if (!hero) return null;
   for (let cell = 0; cell < INVENTORY_CELL_COUNT; cell++) {
     const occupied = occupiedCells(item, cell);
@@ -68,7 +68,7 @@ export function rotateItemInInventory(state: EncounterState, itemId: string): bo
 /** Validate the entire footprint without changing ownership or position. */
 export function canPlaceItem(state: EncounterState, item: CombatItem, heroId: string, cell: number): boolean {
   if (state.phase !== 'preparation' && state.phase !== 'result') return false;
-  const hero = state.heroes.find(candidate => candidate.id === heroId && (state.phase === 'result' || candidate.status !== 'dead'));
+  const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
   const cells = occupiedCells(item, cell);
   if (!hero || !cells) return false;
   return hero.items.every(other => {
@@ -81,7 +81,7 @@ export function canPlaceItem(state: EncounterState, item: CombatItem, heroId: st
 /** Move one real instance only after validating the complete destination. */
 export function moveItem(state: EncounterState, itemId: string, heroId: string, cell: number): boolean {
   if (state.phase !== 'preparation' && state.phase !== 'result') return false;
-  const hero = state.heroes.find(candidate => candidate.id === heroId && (state.phase === 'result' || candidate.status !== 'dead'));
+  const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
   const sources = [state.stash, state.floor, ...state.heroes.map(candidate => candidate.items)];
   const source = sources.find(items => items.some(item => item.id === itemId));
   const item = source?.find(candidate => candidate.id === itemId);
@@ -131,8 +131,8 @@ export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity
   const springs = item.tags?.includes('clockwork') ? neighbours.filter(other => other.tags?.includes('spring')).length : 0;
   const scopes = item.tags?.includes('firearm') ? neighbours.filter(other => other.tags?.includes('scope')).length : 0;
   const jealous = item.definitionId === 'lantern' && !item.calmed && neighbours.some(other => other.tags?.includes('blade'));
-  const passiveFactor = (other: CombatItem): number => other.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
-  const passiveDamage = items.reduce((sum, other) => sum + (other.passiveBonuses?.damage ?? 0) * passiveFactor(other), 0);
+  const passiveFactor = (other: CombatItem): number => ownerAffinity && other.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
+  const passiveDamage = items.reduce((sum, other) => sum + (other.passiveBonuses?.damageReach && item.reach !== other.passiveBonuses.damageReach ? 0 : (other.passiveBonuses?.damage ?? 0) * passiveFactor(other)), 0);
   const passiveHealing = items.reduce((sum, other) => sum + (other.passiveBonuses?.healing ?? 0) * passiveFactor(other), 0);
   const passiveWind = items.reduce((sum, other) => sum + (other.passiveBonuses?.wind ?? 0) * passiveFactor(other), 0);
   const passiveCooldown = items.reduce((factor, other) => {

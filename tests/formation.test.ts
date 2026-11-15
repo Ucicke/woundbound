@@ -21,7 +21,7 @@ describe('formation and reach', () => {
     expect(swapHeroPositions(state, 0, 3)).toBe(false);
   });
 
-  it('automatically approaches the front while preferring living humans to dolls', () => {
+  it('automatically approaches the front regardless of whether a defender is a doll', () => {
     const state = createFullEncounter();
     state.heroes[0].status = 'rebirthing';
     state.heroes[1].status = 'stopped';
@@ -29,6 +29,10 @@ describe('formation and reach', () => {
     expect(chooseHeroTarget(state.heroes, 'lowest', 0, 'near')).toBe(state.heroes[2]);
     expect(chooseHeroTarget(state.heroes, 'lowest', 2, 'near')).toBe(state.heroes[2]);
     expect(chooseHeroTarget(state.heroes, 'lowest', 2, 'far')).toBe(state.heroes[3]);
+    state.heroes[0].status = 'active';
+    expect(chooseHeroTarget(state.heroes, 'front', 0, 'near')).toBe(state.heroes[0]);
+    state.heroes[0].status = 'stopped';
+    expect(chooseHeroTarget(state.heroes, 'front', 0, 'near')).toBe(state.heroes[2]);
     state.enemies[0].status = 'dead';
     state.enemies[3].hp = 1;
     expect(chooseEnemyTarget(state.enemies, 'lowest', 0, 'near')).toBe(state.enemies[1]);

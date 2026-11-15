@@ -63,9 +63,9 @@ describe('complete run', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
     const run = createRun(encounter, () => 0);
     const hero = encounter.heroes[3], lantern = hero.items[0];
-    const blade = createItem('blade', 'test-blade'); blade.cell = 2; hero.items.push(blade);
+    const blade = createItem('blade', 'test-blade'); blade.cell = 2; hero.items = [lantern, blade];
     hero.status = 'stopped'; hero.windUpCharge = 0; hero.durability = 42;
-    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBeCloseTo(1.275);
+    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBeCloseTo(1.5);
     victory(run); expect(run.stage).toBe('cleared');
     expect(openRoute(run)).toBe(true); expect(openRoute(run)).toBe(false);
     expect(enterRoom(run, 'cache')).toBe(true); expect(run.room).toBe(2);
@@ -76,7 +76,7 @@ describe('complete run', () => {
     expect(openRoute(run)).toBe(true); expect(enterRoom(run, 'workshop')).toBe(true);
     expect(windWorkshop(run)).toBe(true); expect(hero.windUpCharge).toBe(hero.maxWindUp); expect(hero.status).toBe('active');
     expect(calmWorkshopItem(run, lantern.id)).toBe(true); expect(calmWorkshopItem(run, lantern.id)).toBe(false);
-    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBeCloseTo(.85);
+    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBeCloseTo(1);
     expect(leaveWorkshop(run)).toBe(true); expect(leaveWorkshop(run)).toBe(false);
     for (let room = 4; room <= 10; room++) {
       expect(openRoute(run)).toBe(true);

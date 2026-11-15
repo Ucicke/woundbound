@@ -2,7 +2,7 @@ import { areAdjacent } from '../combat/inventory.ts';
 import type { CombatEvent, CombatItem, EncounterState } from '../combat/simulation.ts';
 
 export type DialogueTrigger = 'kill' | 'ownerDeath' | 'neighbor' | 'reply' | 'player';
-export interface ItemSpeech { itemId: string; heroId: string; text: string; trigger: DialogueTrigger; expiresAt: number }
+export interface ItemSpeech { itemId: string; heroId: string; text: string; trigger: DialogueTrigger; expiresAt: number; formerCell?: number }
 
 const phrases: Record<DialogueTrigger, readonly string[]> = {
   kill: ['Ещё одна душа...', 'Ну вот, стало тише.'],
@@ -40,6 +40,13 @@ export class ItemDialogue {
       const hero = state.heroes.find(candidate => candidate.id === event.actorId);
       const item = hero?.items.find(candidate => candidate.id === state.item?.id) ?? hero?.items[0];
       if (hero && item) { this.reply = undefined; this.say(item, hero.id, 'ownerDeath', now, true); }
+    } else if (event.kind === 'state' && event.transition === 'permadeath') {
+      const dropped = event.droppedItems?.[0];
+      const item = state.floor.find(candidate => candidate.id === dropped?.id);
+      if (item && dropped) {
+        this.reply = undefined;
+        if (this.say(item, event.actorId, 'ownerDeath', now, true) && this.active) this.active.formerCell = dropped.cell;
+      }
     } else if (event.kind === 'item' && event.defeatedTarget && this.random() < .55) {
       const hero = state.heroes.find(candidate => candidate.id === event.actorId);
       const item = hero?.items.find(candidate => candidate.id === event.sourceId);

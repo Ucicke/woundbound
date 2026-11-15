@@ -113,7 +113,7 @@ describe('inventory ownership and adjacency', () => {
     expect(startBattle(state)).toBe(false);
   });
 
-  it('allows post-defeat organizing of dropped items even when every recipient is dead', () => {
+  it('prevents placing items on a dead hero while allowing recovery of previously held items', () => {
     const state = createFullEncounter();
     const fallen = state.heroes[0];
     const item = fallen.items[0];
@@ -125,12 +125,12 @@ describe('inventory ownership and adjacency', () => {
 
     const recipient = state.heroes[1];
     const cell = Array.from({ length: INVENTORY_CELL_COUNT }, (_, index) => index).find(index => recipient.items.every(other => !occupiedCells(other, other.cell ?? 0)?.includes(index)))!;
-    expect(moveItem(state, item.id, recipient.id, cell)).toBe(true);
-    expect(state.floor).not.toContain(item);
-    expect(recipient.items).toContain(item);
-    expect(recipient.status).toBe('dead');
-    expect(storeItem(state, item.id)).toBe(true);
+    expect(moveItem(state, item.id, recipient.id, cell)).toBe(false);
     expect(state.floor).toContain(item);
     expect(recipient.items).not.toContain(item);
+    expect(recipient.status).toBe('dead');
+    const held = recipient.items[0];
+    expect(storeItem(state, held.id)).toBe(true);
+    expect(state.floor).toContain(held);
   });
 });

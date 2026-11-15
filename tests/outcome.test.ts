@@ -9,7 +9,7 @@ describe('encounter outcomes', () => {
     state.heroes.slice(1).forEach(hero => { hero.status = 'dead'; });
     last.status = 'active'; last.durability = 5; last.windUpCharge = wind;
     const itemId = last.items[0].id;
-    applyEffect(state, last.id, 'damage', 10);
+    applyEffect(state, last.id, 'damage', 100);
     expect(last.status).toBe('dead');
     expect(state.outcome).toBe('defeat');
     expect(state.floor.filter(item => item.id === itemId)).toHaveLength(1);

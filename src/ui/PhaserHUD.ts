@@ -1,6 +1,7 @@
 import type Phaser from 'phaser';
 import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape, synergyTargets, SYNERGY_TAG_LABELS } from '../combat/inventory.ts';
-import { attributeModifier, chooseHeroTarget, heroClassForActor, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { attributeModifier, chooseHeroTarget, heroArmor, heroClassForActor, MAX_ARMOR, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ACTOR_ROWS, actorStateFrame, stoppedDollTransform, CLASS_ITEM_ART, type ActorSpriteId, type ActorSpriteState } from '../presentation/ArtCatalog.ts';
 import { itemArtBounds } from '../presentation/itemGeometry.ts';
 import { getPuppetCellModifiers, getPuppetForm } from '../combat/puppets.ts';
@@ -41,7 +42,7 @@ const itemAtlases: Record<string, string> = Object.fromEntries(Object.entries(it
 const rarityTints = [0x85868b, 0x45a45c, 0x428bdb, 0xa65bd2, 0xd6a52e] as const;
 const puppetBranchLabels = { theatrical: 'Кукольно-театральная', mechanical: 'Механико-стимпанковая', mystical: 'Религиозно-мистическая' } as const;
 const rarityLabels: Record<NonNullable<CombatItem['rarity']>, string> = { common: 'ОБЫЧНОЕ', uncommon: 'НЕОБЫЧНОЕ', rare: 'РЕДКОЕ', epic: 'МИФИЧЕСКОЕ', legendary: 'ЛЕГЕНДАРНОЕ' };
-const categoryLabels: Record<NonNullable<CombatItem['category']>, string> = { weapon: 'ОРУЖИЕ', protection: 'ЗАЩИТА', jewelry: 'УКРАШЕНИЕ', relic: 'РЕЛИКВИЯ', tool: 'ИНСТРУМЕНТ', consumable: 'РАСХОДНИК', ammo: 'БОЕПРИПАС' };
+const categoryLabels: Record<NonNullable<CombatItem['category']>, string> = { weapon: 'ОРУЖИЕ', protection: 'ЗАЩИТА', jewelry: 'УКРАШЕНИЕ', relic: 'РЕЛИКВИЯ', tool: 'ИНСТРУМЕНТ', consumable: 'ПРИПАС', ammo: 'БОЕПРИПАС' };
 function itemRarityTint(rarity: CombatItem['rarity']): number {
   const tier = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4 }[rarity ?? 'common'];
   return rarityTints[tier]!;
@@ -203,7 +204,7 @@ export class PhaserHUD {
         const relations = synergyTargets(item);
         const info = this.ui.itemDescription(item, hero);
         const match = info.match(/(?:Урон|Лечение|Подзавод):\s*\d+\./);
-        const passive = info.match(/(?:Броня|Урон вещей|Лечение|Подзавод|Кулдаун):[^.]+/g)?.join(' · ');
+        const passive = info.match(/(?:Броня|Урон вещей|Урон дальних вещей|Лечение|Подзавод|Кулдаун):[^.]+/g)?.join(' · ');
         const stat = match?.[0] ?? (item.effect === 'passive' ? passive ?? 'Пассивное свойство' : '');
         const icon = item.effect === 'heal' ? '✚' : item.effect === 'wind' ? '⚙' : item.effect === 'passive' ? '◆' : item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
         const damageLabel = !item.effect || item.effect === 'damage' ? (item.damageType === 'fire' ? 'огонь' : item.damageType === 'arcane' ? 'мистика' : 'физический') : '';
@@ -213,7 +214,7 @@ export class PhaserHUD {
           title: item.name,
           tags: [...tags].reverse().map((label, index) => ({ label, color: ['#86ddb5', '#e3ba75', '#a5baf1'][index % 3]! })),
           summary: stat ? `${icon} ${stat} ${damageLabel ? `(${damageLabel})` : ''} ${item.cooldownMs ? `· ⏱ ${cooldown}` : ''}` : '',
-          description: item.description ?? '',
+          description: [item.description ?? '', item.classAffinity ? `Для класса «${ITEM_CLASS_LABELS[item.classAffinity]}»: +${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}% к эффекту.` : '', item.passiveBonuses?.armor ? `Общий предел брони: ${MAX_ARMOR}.` : '', damageLabel ? 'Типы урона пока действуют одинаково.' : ''].filter(Boolean).join('\n'),
           relations: relations.map(rule => ({ label: SYNERGY_TAG_LABELS[rule.tag] ?? rule.tag.toUpperCase(), detail: rule.text, color: rule.negative ? '#ef9e70' : '#86ddb5' })),
         };
         this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, zone);
@@ -1243,9 +1244,9 @@ export class PhaserHUD {
     const speech = this.ui.dialogue.active;
     if (!speech || speech.expiresAt <= this.now) return;
     const hero = this.ui.state.heroes.find(candidate => candidate.id === speech.heroId);
-    const item = hero?.items.find(candidate => candidate.id === speech.itemId);
+    const item = hero?.items.find(candidate => candidate.id === speech.itemId) ?? this.ui.state.floor.find(candidate => candidate.id === speech.itemId);
     if (!hero || !item) return;
-    const cells = occupiedCells(item, item.cell ?? 0);
+    const cells = occupiedCells(item, speech.formerCell ?? item.cell ?? 0);
     const anchor = cells?.map(index => this.cells.get(`${hero!.id}:${index}`)).find(Boolean);
     if (!anchor) return;
     const maxWidth = Math.min(this.width < 820 ? 155 : 210, this.width - 20);
@@ -1280,7 +1281,7 @@ export class PhaserHUD {
     const form = actor.isPuppet ? getPuppetForm(actor.puppetFormId) : undefined;
     const pending = actor.status === 'rebirthing' ? getPuppetForm(actor.pendingPuppetFormId) : undefined;
     const details = actor.side === 'enemy'
-      ? `Враги охотятся сначала на людей, затем на кукол.${target ? ` Сейчас атакует: ${target}.` : ''}${actor.isBoss ? ' В затянувшемся бою ярость усиливает атаки.' : ''}`
+      ? `Страж в строю прикрывает союзников. Остановленные куклы не удерживают переднюю линию; дальние атаки выбирают цель по своему правилу.${target ? ` Сейчас атакует: ${target}.` : ''}${actor.isBoss ? ' В затянувшемся бою ярость усиливает атаки.' : ''}`
       : form
         ? `${actorStatus[actor.status]}. ${form.name} · ${puppetBranchLabels[form.branch]}\nПрочность ${form.maxDurability} · броня ${form.armor} · заряд ${form.maxWindUp} · расход ${form.windDrainPerSecond}/с · входящий урон ×${form.damageTakenMultiplier.toFixed(2)}.\n${form.passiveName}: ${form.passiveDescription}\n${form.cellModifiers.map(modifier => `${modifier.label} Цвет ячеек: ${modifier.tag === 'threaded' ? 'бирюзовый' : modifier.tag === 'mechanical' ? 'латунный' : modifier.tag === 'cursed' ? 'фиолетовый' : 'зелёный'}.`).join('\n')}${actor.status === 'stopped' ? '\nНажимайте, чтобы завести.' : ''}`
         : `${actorStatus[actor.status]}${pending ? `. Предстоит перерождение: ${pending.name}.` : ''}${actor.status === 'stopped' ? '. Нажимайте, чтобы завести.' : '.'}`;
@@ -1373,7 +1374,7 @@ export class PhaserHUD {
     const rows = [
       { name: 'Сила', value: s.strength, effect: `Урон оружия ${signed(attributeModifier(s.strength) * 5)}%` },
       { name: 'Ловкость', value: s.dexterity, effect: `Перезарядка ${signed(-attributeModifier(s.dexterity) * 2)}%` },
-      { name: 'Стойкость', value: s.constitution, effect: `Броня ${signed(attributeModifier(s.constitution))}` },
+      { name: 'Стойкость', value: s.constitution, effect: `Броня ${heroArmor(hero)}/${MAX_ARMOR} (стойкость ${signed(attributeModifier(s.constitution))})` },
       { name: 'Разум', value: s.intellect, effect: `Урон вещей ${signed(attributeModifier(s.intellect) * 5)}%` },
       { name: 'Воля', value: s.wisdom, effect: `Лечение ${signed(attributeModifier(s.wisdom) * 5)}%` },
       { name: 'Дух', value: s.presence, effect: `Подзавод ${signed(attributeModifier(s.presence) * 5)}%` },

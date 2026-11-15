@@ -153,7 +153,7 @@ export class GameUI {
 
   itemDescription(item: CombatItem, hero?: Combatant): string {
     const ownerAffinity = hero ? heroClassForActor(hero) : undefined;
-    const nativeFactor = item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
+    const nativeFactor = ownerAffinity && item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
     const bonuses = hero ? itemBonuses(item, hero.items, ownerAffinity) : { damage: 0, cooldownFactor: 1, healing: 0, wind: 0, descriptions: [] };
     const puppetRules = hero ? getPuppetItemRules(hero, item) : { outputMultiplier: 1, cooldownMultiplier: 1, chargeCost: 0, chargeRefund: 0, adjacentCooldownReductionMs: 0, oracleCharge: 0, durabilityRepair: 0 };
     const puppetCells = hero ? getPuppetItemCellModifiers(hero, item).map(modifier => modifier.label) : [];
@@ -164,10 +164,10 @@ export class GameUI {
       const passive = item.passiveBonuses;
       const stats = [
         ...(passive?.armor ? [`Броня: −${Math.round(passive.armor * nativeFactor)} урона за удар`] : []),
-        ...(passive?.damage ? [`Урон вещей: +${Math.round(passive.damage * nativeFactor)}`] : []),
+        ...(passive?.damage ? [`Урон ${passive.damageReach === 'far' ? 'дальних вещей' : 'вещей'}: +${Math.round(passive.damage * nativeFactor)}`] : []),
         ...(passive?.healing ? [`Лечение: +${Math.round(passive.healing * nativeFactor)}`] : []),
         ...(passive?.wind ? [`Подзавод: +${Math.round(passive.wind * nativeFactor)}`] : []),
-        ...(passive?.cooldownFactor ? [`Кулдаун: −${Math.round((1 - passive.cooldownFactor) * 100)}%`] : []),
+        ...(passive?.cooldownFactor ? [`Кулдаун: −${Math.round(Math.min(.5, (1 - passive.cooldownFactor) * nativeFactor) * 100)}%`] : []),
       ];
       return `${identity}${item.description ?? 'Пассивное свойство.'} ${stats.join('; ')}.${puppetCells.length ? ` Ячейки формы: ${puppetCells.join(' ')}` : ''}`;
     }

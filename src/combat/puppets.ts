@@ -41,6 +41,7 @@ export interface PuppetForm {
 
 export interface PuppetPassiveState {
   itemActivations: number;
+  mechanicalActivations: number;
   hitsTaken: number;
   repeatedTargetId: string | null;
   repeatedTargetCount: number;
@@ -149,7 +150,7 @@ export function getPuppetItemRules(actor: Combatant, item: CombatItem, targetId?
       adjacentCooldownReductionMs = 300;
       break;
     case 'master-overclock':
-      if (tags.has('mechanical') && nextActivation % 3 === 0 && actor.windUpCharge >= 5) { outputMultiplier *= 1.6; chargeCost += 5; }
+      if (tags.has('mechanical') && (actor.puppetPassiveState.mechanicalActivations + 1) % 3 === 0 && actor.windUpCharge >= 5) { outputMultiplier *= 1.6; chargeCost += 5; }
       break;
     case 'gear-oracle':
       if (nextActivation % 4 === 0) oracleCharge = tags.has('sacred') ? 20 : 15;
@@ -163,8 +164,9 @@ export function getPuppetItemRules(actor: Combatant, item: CombatItem, targetId?
   return { outputMultiplier, cooldownMultiplier, chargeCost, chargeRefund, adjacentCooldownReductionMs, oracleCharge, durabilityRepair };
 }
 
-export function registerPuppetItemTrigger(actor: Combatant, targetId?: string): void {
+export function registerPuppetItemTrigger(actor: Combatant, item: CombatItem, targetId?: string): void {
   actor.puppetPassiveState.itemActivations++;
+  if (getPuppetItemCellModifiers(actor, item).some(modifier => modifier.tag === 'mechanical')) actor.puppetPassiveState.mechanicalActivations++;
   if (getPuppetForm(actor.puppetFormId)?.passiveId !== 'fate-streak' || !targetId) return;
   if (actor.puppetPassiveState.repeatedTargetId === targetId) actor.puppetPassiveState.repeatedTargetCount++;
   else { actor.puppetPassiveState.repeatedTargetId = targetId; actor.puppetPassiveState.repeatedTargetCount = 1; }
@@ -177,9 +179,4 @@ export function getPuppetWindDrain(actor: Combatant): number {
   const mechanicalCells = new Set(form.cellModifiers.filter(modifier => modifier.tag === 'mechanical').flatMap(modifier => modifier.cells));
   const occupiedMechanicalCells = new Set(actor.items.flatMap(item => (occupiedCells(item, item.cell ?? 0) ?? []).filter(cell => mechanicalCells.has(cell))));
   return form.windDrainPerSecond * Math.max(.4, 1 - occupiedMechanicalCells.size * .12);
-}
-
-export function getPuppetChargePerManualWind(actor: Combatant): number {
-  const base = actor.maxWindUp / COMBAT_CONFIG.clicksToFull;
-  return getPuppetForm(actor.puppetFormId)?.passiveId === 'penitent-winding' ? base * 1.5 : base;
 }
