@@ -365,7 +365,7 @@ export class PhaserHUD {
   }
 
   private header(): void {
-    const stageName = this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ ${Math.min(3, Math.ceil(this.ui.run.room / 3))} · СПУСК ${this.ui.run.room}/10`;
+    const stageName = this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ 1 · СПУСК ${this.ui.run.room}/10`;
     if (this.ui.run.stage !== 'opening' && this.ui.run.stage !== 'victory') {
       const available = Math.max(40, this.width - 2 * (162 + this.left.x));
       const panelW = Math.min(420, this.width * .57, available);
