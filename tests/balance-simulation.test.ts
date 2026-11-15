@@ -2,11 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
 import { createRun, enterRoom } from '../src/combat/run.ts';
 import { prepareEncounter } from '../src/combat/simulation.ts';
-import { simulateBalanceRun, summarizeBalanceRuns, type BalanceAgent } from '../src/combat/balanceSimulation.ts';
+import { createBalanceSimulationStart, simulateBalanceRun, summarizeBalanceRuns, type BalanceAgent } from '../src/combat/balanceSimulation.ts';
 
 const agents: BalanceAgent[] = ['random', 'synergy', 'balanced'];
 
 describe('run balance simulation', () => {
+  it('starts each simulated run with the curated starter inventory, never the full test loadout', () => {
+    const state = createBalanceSimulationStart(() => 0.25);
+    prepareEncounter(state);
+    expect(state.heroes.map(hero => hero.items.length)).toEqual([3, 3, 2, 3]);
+  });
+
   it('raises enemy pressure by floor and gives the boss a higher final profile', () => {
     const state = createFullEncounter({ random: () => 0.25 });
     prepareEncounter(state);
@@ -45,7 +51,7 @@ describe('run balance simulation', () => {
   });
 
   it('plays complete seeded runs with random, synergy, and balanced loadout agents', () => {
-    const sampleSizes: Record<BalanceAgent, number> = { random: 1000, synergy: 20, balanced: 20 };
+    const sampleSizes: Record<BalanceAgent, number> = { random: 1000, synergy: 300, balanced: 300 };
     const seedBases: Record<BalanceAgent, number> = { random: 10_000, synergy: 20_000, balanced: 30_000 };
     const summaries = new Map<BalanceAgent, ReturnType<typeof summarizeBalanceRuns>>();
 
@@ -56,9 +62,10 @@ describe('run balance simulation', () => {
       summaries.set(agent, summary);
       console.info(`[balance] ${agent}: ${(winRate * 100).toFixed(1)}% (${summary.wins}/${summary.runs}), boss ${summary.bossAttempts}/${summary.runs}, rooms ${summary.averageRooms.toFixed(1)}, run ${summary.averageSeconds.toFixed(0)}s, boss ${summary.averageBossSeconds.toFixed(0)}s, timeouts ${summary.timeouts}`);
       expect(results).toHaveLength(sampleSizes[agent]);
-      expect(summary.timeouts, `${agent} simulator timeouts`).toBe(0);
       expect(results.every(result => result.rooms.length > 0)).toBe(true);
     }
+
+    for (const agent of agents) expect(summaries.get(agent)!.timeouts, `${agent} simulator timeouts`).toBe(0);
 
     const randomRate = summaries.get('random')!.wins / sampleSizes.random;
     const bestRate = summaries.get('synergy')!.wins / sampleSizes.synergy;

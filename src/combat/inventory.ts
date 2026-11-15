@@ -101,7 +101,7 @@ export function storeItem(state: EncounterState, itemId: string): boolean {
   if (!owner || index < 0) return false;
   const [item] = owner.items.splice(index, 1);
   delete item.cell;
-  state.stash.push(item);
+  state.floor.push(item);
   state.item = state.heroes[0]?.items[0] ?? null;
   return true;
 }
@@ -110,6 +110,19 @@ export function areAdjacent(a: CombatItem, b: CombatItem): boolean {
   const left = occupiedCells(a, a.cell ?? 0) ?? [];
   const right = occupiedCells(b, b.cell ?? 0) ?? [];
   return left.some(x => right.some(y => Math.abs(inventoryColumn(x) - inventoryColumn(y)) + Math.abs(inventoryRow(x) - inventoryRow(y)) === 1));
+}
+
+export const SYNERGY_TAG_LABELS: Record<string, string> = { blade: 'КЛИНОК', whetstone: 'ТОЧИЛЬНЫЙ КАМЕНЬ', clockwork: 'МЕХАНИЗМ', spring: 'ПРУЖИНА', firearm: 'СТРЕЛКОВОЕ', scope: 'ПРИЦЕЛ', support: 'ПОДДЕРЖКА', glass: 'СТЕКЛО', bell: 'КОЛОКОЛ' };
+export function synergyTargets(item: CombatItem): Array<{ tag: string; text: string; negative?: boolean }> {
+  const result: Array<{ tag: string; text: string; negative?: boolean }> = [];
+  if (item.tags?.includes('whetstone')) result.push({ tag: 'blade', text: 'Соседнему клинку +8 урона' });
+  if (item.tags?.includes('blade')) result.push({ tag: 'whetstone', text: 'Камень рядом: +8 урона' });
+  if (item.tags?.includes('spring')) result.push({ tag: 'clockwork', text: 'Соседнему механизму −38% кулдауна' });
+  if (item.tags?.includes('clockwork')) result.push({ tag: 'spring', text: 'Пружина рядом: −38% кулдауна' });
+  if (item.tags?.includes('scope')) result.push({ tag: 'firearm', text: 'Соседнему стрелковому оружию +8 урона' });
+  if (item.tags?.includes('firearm')) result.push({ tag: 'scope', text: 'Прицел рядом: +8 урона' });
+  if (item.definitionId === 'lantern' && !item.calmed) result.push({ tag: 'blade', text: 'Клинок рядом: +50% кулдауна', negative: true });
+  return result;
 }
 
 export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity?: ItemClassAffinity): { damage: number; cooldownFactor: number; healing: number; wind: number; descriptions: string[] } {
@@ -126,16 +139,16 @@ export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity
     const cooldown = other.passiveBonuses?.cooldownFactor ?? 1;
     return factor * Math.max(0.5, 1 - (1 - cooldown) * passiveFactor(other));
   }, 1);
-  const adjacencyCooldown = Math.max(0.1, 1 - springs * 0.15) * (jealous ? 1.5 : 1);
+  const adjacencyCooldown = Math.max(0.1, 1 - springs * 0.38) * (jealous ? 1.5 : 1);
   return {
-    damage: stones * 2 + scopes * 3 + passiveDamage,
+    damage: stones * 8 + scopes * 8 + passiveDamage,
     cooldownFactor: Math.max(0.35, adjacencyCooldown * passiveCooldown),
     healing: passiveHealing,
     wind: passiveWind,
     descriptions: [
-      ...(stones ? [`Клинок: +${stones * 2} урона`] : []),
-      ...(scopes ? [`Прицел: +${scopes * 3} урона`] : []),
-      ...(springs ? [`Механизм: −${springs * 15}% кулдауна`] : []),
+      ...(stones ? [`Клинок: +${stones * 8} урона`] : []),
+      ...(scopes ? [`Прицел: +${scopes * 8} урона`] : []),
+      ...(springs ? [`Механизм: −${springs * 38}% кулдауна`] : []),
       ...(passiveDamage ? [`Снаряжение: +${passiveDamage} урона`] : []),
       ...(passiveHealing ? [`Реликвии: +${passiveHealing} лечения`] : []),
       ...(passiveWind ? [`Механизмы: +${passiveWind} завода`] : []),

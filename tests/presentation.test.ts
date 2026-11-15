@@ -58,7 +58,7 @@ describe('combat presentation projection', () => {
 
   it('projects separate doll meters, cooldown and numeric rebirth without mutation', () => {
     const state = createFullEncounter();
-    const hero = state.heroes[0]; hero.status = 'stopped'; hero.durability = 70; hero.wind = 35;
+    const hero = state.heroes[0]; hero.status = 'stopped'; hero.durability = 70; hero.windUpCharge = 35;
     const before = JSON.stringify(hero);
     expect(projectHero(hero)).toMatchObject({ durability: 70, wind: 35, cooldownMs: hero.items[0].remainingMs });
     hero.status = 'rebirthing'; hero.rebirthMs = 1250;

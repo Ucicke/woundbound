@@ -1,9 +1,13 @@
 import type Phaser from 'phaser';
-import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape } from '../combat/inventory.ts';
-import { chooseHeroTarget, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape, synergyTargets, SYNERGY_TAG_LABELS } from '../combat/inventory.ts';
+import { attributeModifier, chooseHeroTarget, heroClassForActor, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { ACTOR_ROWS, actorStateFrame, stoppedDollTransform, CLASS_ITEM_ART, type ActorSpriteId, type ActorSpriteState } from '../presentation/ArtCatalog.ts';
 import { itemArtBounds } from '../presentation/itemGeometry.ts';
+import { getPuppetCellModifiers, getPuppetForm } from '../combat/puppets.ts';
+import { COMBAT_CONFIG } from '../combat/config.ts';
+import { GAME_VERSION } from '../version.ts';
 import type { GameUI } from './GameUI.ts';
+import { TooltipLayer, type ItemTooltipContent } from './TooltipLayer.ts';
 
 export interface UIZone {
   x: number; y: number; width: number; height: number;
@@ -35,20 +39,40 @@ const itemCatalog = CLASS_ITEM_ART;
 const itemFrames: Record<string, number> = Object.fromEntries(Object.entries(itemCatalog).map(([id, art]) => [id, art.frame]));
 const itemAtlases: Record<string, string> = Object.fromEntries(Object.entries(itemCatalog).map(([id, art]) => [id, art.atlas]));
 const rarityTints = [0x85868b, 0x45a45c, 0x428bdb, 0xa65bd2, 0xd6a52e] as const;
+const puppetBranchLabels = { theatrical: 'Кукольно-театральная', mechanical: 'Механико-стимпанковая', mystical: 'Религиозно-мистическая' } as const;
 const rarityLabels: Record<NonNullable<CombatItem['rarity']>, string> = { common: 'ОБЫЧНОЕ', uncommon: 'НЕОБЫЧНОЕ', rare: 'РЕДКОЕ', epic: 'МИФИЧЕСКОЕ', legendary: 'ЛЕГЕНДАРНОЕ' };
 const categoryLabels: Record<NonNullable<CombatItem['category']>, string> = { weapon: 'ОРУЖИЕ', protection: 'ЗАЩИТА', jewelry: 'УКРАШЕНИЕ', relic: 'РЕЛИКВИЯ', tool: 'ИНСТРУМЕНТ', consumable: 'РАСХОДНИК', ammo: 'БОЕПРИПАС' };
 function itemRarityTint(rarity: CombatItem['rarity']): number {
   const tier = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4 }[rarity ?? 'common'];
   return rarityTints[tier]!;
 }
+function mixTint(start: number, end: number, amount: number): number {
+  const t = Math.max(0, Math.min(1, amount));
+  const channel = (shift: number): number => Math.round(((start >> shift) & 0xff) * (1 - t) + ((end >> shift) & 0xff) * t);
+  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
+}
 const portraitFrames: Record<string, number> = { 'hero-1': 0, 'hero-2': 1, 'hero-3': 2, 'hero-4': 3 };
-const actorStatus: Record<Combatant['status'], string> = { human: 'Человек', enemy: 'Враг', rebirthing: 'Перерождение', stopped: 'Кукла остановлена', active: 'Кукла заведена', dead: 'Погиб' };
+const actorStatus: Record<Combatant['status'], string> = { human: 'Пока что живой', enemy: 'Враг', rebirthing: 'Перерождается', stopped: 'Кукла · завод кончился', active: 'Кукла · заведена', dead: 'Погиб навсегда' };
+const classCardThemes = {
+  guard: { frame: 0x8f9ba9, engraving: 0xc1cbd1, fill: 0x252b35, header: 0x526170, cell: 0x262c32, edge: 0x77828c, health: 0xe25955, tag: 0x60343b, dollTint: 0xc5d0de, puppetCellTint: 0x9e626b, art: 0 },
+  huntress: { frame: 0x9e7c4e, engraving: 0xc6a66c, fill: 0x242c27, header: 0x536449, cell: 0x29342c, edge: 0x718363, health: 0x8ec86b, tag: 0x665b42, dollTint: 0xc5d19d, puppetCellTint: 0x78904e, art: 1 },
+  pilgrim: { frame: 0xaaa7a0, engraving: 0xdfceab, fill: 0x302932, header: 0x75685b, cell: 0x302832, edge: 0x96897d, health: 0xe5ad5c, tag: 0x763f36, dollTint: 0xd3c7ae, puppetCellTint: 0x9d8875, art: 2 },
+  clockmaker: { frame: 0xc0965c, engraving: 0xe5bf7f, fill: 0x2a2334, header: 0x685477, cell: 0x292435, edge: 0x9c7a56, health: 0xe5bb64, tag: 0x79603a, dollTint: 0xd2b6ce, puppetCellTint: 0x886997, art: 3 },
+} as const;
+// All generated class dashboards share the Clockmaker's portrait, nameplate, resource groove, and tray geometry.
+const dashboardLayout = {
+  guard: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
+  huntress: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
+  pilgrim: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
+  clockmaker: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
+} as const;
 
 /** All visible UI is drawn to Phaser's Canvas; input zones share these exact bounds. */
 export class PhaserHUD {
   readonly zones: UIZone[] = [];
   private root: Phaser.GameObjects.Container;
   private actorLayer: Phaser.GameObjects.Container;
+  private readonly tooltips: TooltipLayer;
   private actorViews = new Map<string, BattlefieldActorView>();
   private pendingActorEvents: CombatEvent[] = [];
   private width = 1;
@@ -59,15 +83,24 @@ export class PhaserHUD {
   private cells = new Map<string, { x: number; y: number; size: number }>();
   private hover?: UIZone;
   private now = 0;
+  private clickNotice?: { x: number; y: number; text: string; until: number };
+  private displayedHealth = new Map<string, { value: number; at: number }>();
+  private currentRoom = 0;
+  private priorRoomDead = new Set<string>();
+  private openingHover = 0;
+  private openingHoverAt = 0;
   private windAnimations = new Map<string, { from: number; to: number; until: number }>();
+  private windFlashes = new Map<string, number>();
   private consumedSequence = 0;
   private lastShakeAt = 0;
+  private lastDrawKey = '';
   private encounterState: EncounterState;
 
   constructor(private readonly scene: Phaser.Scene, private readonly ui: GameUI) {
     this.root = scene.add.container(0, 0);
     this.actorLayer = scene.add.container(0, 0);
     this.root.add(this.actorLayer);
+    this.tooltips = new TooltipLayer(scene);
     this.encounterState = ui.state;
     scene.events.once('shutdown', () => {
       this.actorViews.clear(); this.pendingActorEvents = [];
@@ -75,32 +108,129 @@ export class PhaserHUD {
     });
   }
 
-  zoneAt(x: number, y: number): UIZone | undefined { return [...this.zones].reverse().find(zone => x >= zone.x && y >= zone.y && x <= zone.x + zone.width && y <= zone.y + zone.height); }
+  zoneAt(x: number, y: number): UIZone | undefined {
+    for (let index = this.zones.length - 1; index >= 0; index--) {
+      const zone = this.zones[index]!;
+      if (x >= zone.x && y >= zone.y && x <= zone.x + zone.width && y <= zone.y + zone.height) return zone;
+    }
+    return undefined;
+  }
+
+  showClickNotice(x: number, y: number, text: string): void { this.clickNotice = { x, y, text, until: performance.now() + 1200 }; }
 
   draw(pointerX: number, pointerY: number, drag?: DragPreview): void {
-    this.width = this.scene.scale.width; this.height = this.scene.scale.height; this.now = performance.now();
+    this.width = this.scene.scale.width; this.height = this.scene.scale.height; this.now = Math.floor(performance.now() / 80) * 80;
     if (this.encounterState !== this.ui.state) {
       this.encounterState = this.ui.state;
+      this.currentRoom = 0; this.priorRoomDead.clear();
+      this.lastDrawKey = '';
       this.clearTransientPresentation();
     }
+    if (this.currentRoom !== this.ui.run.room) {
+      if (this.currentRoom) for (const hero of this.ui.state.heroes) if (hero.status === 'dead') this.priorRoomDead.add(hero.id);
+      this.currentRoom = this.ui.run.room;
+    }
+    const actorKey = this.ui.state.heroes.map(hero => `${hero.id}:${hero.status}:${hero.hp}:${hero.durability}:${hero.windUpCharge}:${hero.rebirthMs}:${hero.items.map(item => `${item.id}-${item.cell ?? ''}-${item.rotation ?? ''}-${Math.ceil(item.remainingMs / 80)}`).join(',')}`).join('|');
+    const looseKey = [...this.ui.state.stash, ...this.ui.state.floor, ...this.ui.run.offers].map(item => `${item.id}-${item.cell ?? ''}-${item.rotation ?? ''}`).join('|');
+    const dragKey = drag ? `${drag.item.id}:${drag.x}:${drag.y}:${drag.heroId ?? ''}:${drag.anchor ?? ''}:${drag.valid ?? ''}` : '';
+    const drawKey = [this.width, this.height, this.now, Math.round(pointerX), Math.round(pointerY), this.ui.run.stage, this.ui.run.room,
+      this.ui.state.phase, this.ui.state.outcome, this.ui.state.elapsedMs, this.ui.state.nextEventSequence, actorKey, looseKey,
+      this.ui.selectedItem ?? '', this.ui.helpOpen, this.ui.heroInfoId ?? '', this.ui.confirmReset, this.ui.dialogOpen, this.ui.paused,
+      this.ui.startLoadoutMenuOpen, this.ui.startingLoadout, this.clickNotice?.until ?? 0, dragKey].join('~');
+    if (drawKey === this.lastDrawKey) return;
+    this.lastDrawKey = drawKey;
     this.hover = this.zoneAt(pointerX, pointerY);
     for (const child of [...this.root.list]) if (child !== this.actorLayer) child.destroy();
     this.actorLayer.setVisible(false);
     this.zones.length = 0; this.cells.clear();
     if (this.ui.run.stage === 'opening') {
+      this.tooltips.hide();
       this.openingModal();
+      this.text(GAME_VERSION, 8, this.height - 15, 10, '#aaa3aa').setAlpha(.65);
       return;
     }
     if (this.ui.run.stage !== 'battle') this.pendingActorEvents = [];
     const compact = this.width < 820;
     this.layout(compact);
     this.consumePresentationEvents();
-    this.background(); this.header(); this.party(); this.room(drag);
+    this.background(); this.header(); this.party(drag); this.room(drag);
+    if (this.ui.paused) {
+      const w = Math.min(150, this.field.width * .35), h = 48;
+      const x = this.field.x + this.field.width - w - 16, y = this.field.y + 14;
+      this.panelTexture(x, y, w, h);
+      const label = this.text('ПАУЗА', x + w / 2, y + h / 2, 12, '#f5ddab', w - 24, .5);
+      label.setOrigin(.5, .5);
+    }
+    this.text(GAME_VERSION, 8, this.height - 15, 10, '#aaa3aa').setAlpha(.65);
     if (!drag) this.itemSpeech();
     if (drag) this.drawDrag(drag);
     if (this.ui.confirmReset) this.resetDialog();
-    if (this.hover?.itemId && !drag) this.tooltip(this.itemById(this.hover.itemId));
-    else if (this.hover?.actorId && !drag) this.actorTooltip(this.ui.state.heroes.find(actor => actor.id === this.hover?.actorId) ?? this.ui.state.enemies.find(actor => actor.id === this.hover?.actorId));
+    if (this.ui.helpOpen) this.helpDialog();
+    if (this.ui.heroInfoId) this.heroInfoDialog();
+    if (this.ui.dialogOpen) { this.tooltips.hide(); return; }
+    this.renderHoverTooltip(pointerX, pointerY, drag);
+    if (this.clickNotice && this.clickNotice.until > this.now) {
+      const notice = this.clickNotice;
+      const y = Math.max(4, notice.y - 34 - (1200 - (notice.until - this.now)) * .012);
+      const x = Math.max(6, Math.min(this.width - 150, notice.x - 70));
+      this.panelTexture(x, y, 146, 26); this.text(notice.text, x + 73, y + 6, 12, '#ffe4bd', 138, .5);
+    }
+  }
+
+  /** Update only the transient hover layer; called directly from pointer events. */
+  updateHover(pointerX: number, pointerY: number, drag?: DragPreview): string {
+    this.hover = this.zoneAt(pointerX, pointerY);
+    this.renderHoverTooltip(pointerX, pointerY, drag);
+    if (this.hover?.itemId) return `item:${this.hover.itemId}`;
+    if (this.hover?.actorId) return `actor:${this.hover.actorId}`;
+    if (this.hover?.heroId && this.hover.cell !== undefined) {
+      const hero = this.ui.state.heroes.find(candidate => candidate.id === this.hover?.heroId);
+      if (hero?.isPuppet && getPuppetCellModifiers(hero, this.hover.cell).length) return `cell:${hero.id}:${this.hover.cell}`;
+    }
+    return '';
+  }
+
+  private renderHoverTooltip(pointerX: number, pointerY: number, drag?: DragPreview): void {
+    if (drag || this.ui.dialogOpen || this.ui.run.stage === 'opening') { this.tooltips.hide(); return; }
+    const zone = this.hover;
+    if (zone?.itemId) {
+      const item = this.itemById(zone.itemId);
+      if (item) {
+        const hero = this.ui.state.heroes.find(candidate => candidate.items.includes(item));
+        const tags = [categoryLabels[item.category ?? 'relic'], ...(item.tags ?? []).map(tag => SYNERGY_TAG_LABELS[tag] ?? tag.toUpperCase())];
+        const relations = synergyTargets(item);
+        const info = this.ui.itemDescription(item, hero);
+        const match = info.match(/(?:Урон|Лечение|Подзавод):\s*\d+\./);
+        const passive = info.match(/(?:Броня|Урон вещей|Лечение|Подзавод|Кулдаун):[^.]+/g)?.join(' · ');
+        const stat = match?.[0] ?? (item.effect === 'passive' ? passive ?? 'Пассивное свойство' : '');
+        const icon = item.effect === 'heal' ? '✚' : item.effect === 'wind' ? '⚙' : item.effect === 'passive' ? '◆' : item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
+        const damageLabel = !item.effect || item.effect === 'damage' ? (item.damageType === 'fire' ? 'огонь' : item.damageType === 'arcane' ? 'мистика' : 'физический') : '';
+        const cooldown = info.match(/Кулдаун: ([^.]+(?:\.\d+)? с(?: → [^.]+(?:\.\d+)? с)?)/)?.[1] ?? `${(item.cooldownMs / 1000).toFixed(1)} с`;
+        const content: ItemTooltipContent = {
+          key: `${item.id}:${info}`,
+          title: item.name,
+          tags: [...tags].reverse().map((label, index) => ({ label, color: ['#86ddb5', '#e3ba75', '#a5baf1'][index % 3]! })),
+          summary: stat ? `${icon} ${stat} ${damageLabel ? `(${damageLabel})` : ''} ${item.cooldownMs ? `· ⏱ ${cooldown}` : ''}` : '',
+          description: item.description ?? '',
+          relations: relations.map(rule => ({ label: SYNERGY_TAG_LABELS[rule.tag] ?? rule.tag.toUpperCase(), detail: rule.text, color: rule.negative ? '#ef9e70' : '#86ddb5' })),
+        };
+        this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, zone);
+        return;
+      }
+    }
+    if (zone?.actorId) {
+      const actor = this.ui.state.heroes.find(candidate => candidate.id === zone.actorId) ?? this.ui.state.enemies.find(candidate => candidate.id === zone.actorId);
+      if (actor) { this.actorTooltip(actor, pointerX, pointerY); return; }
+    }
+    if (zone?.heroId && zone.cell !== undefined) {
+      const hero = this.ui.state.heroes.find(candidate => candidate.id === zone.heroId);
+      const modifier = hero?.isPuppet ? getPuppetCellModifiers(hero, zone.cell)[0] : undefined;
+      if (modifier) {
+        this.tooltips.showText(`cell:${hero?.id}:${zone.cell}`, modifier.label, pointerX, pointerY, this.width, this.height);
+        return;
+      }
+    }
+    this.tooltips.hide();
   }
 
   private clearTransientPresentation(): void {
@@ -112,6 +242,9 @@ export class PhaserHUD {
     this.actorViews.clear();
     this.pendingActorEvents = [];
     this.windAnimations.clear();
+    this.displayedHealth.clear();
+    this.clickNotice = undefined;
+    this.windFlashes.clear();
     this.consumedSequence = 0;
     this.lastShakeAt = this.now;
     this.hover = undefined;
@@ -122,11 +255,11 @@ export class PhaserHUD {
 
   private layout(compact: boolean): void {
     const margin = Math.max(5, Math.round(this.width * .007));
-    const head = compact ? 32 : Math.max(36, this.height * .045);
+    const head = compact ? 62 : Math.max(62, this.height * .07);
     const y = head + margin;
     const roomHeight = this.height - y - margin;
     if (compact) {
-      const partyH = Math.floor(roomHeight * .59);
+      const partyH = Math.floor(roomHeight * (this.ui.run.stage === 'reward' || this.ui.run.stage === 'cache' ? .54 : .59));
       this.left = { x: margin, y, width: this.width - margin * 2, height: partyH - margin };
       this.right = { x: margin, y: y + partyH, width: this.width - margin * 2, height: roomHeight - partyH };
     } else {
@@ -147,7 +280,10 @@ export class PhaserHUD {
       }
       if (event.kind === 'wind') {
         const target = this.ui.state.heroes.find(hero => hero.id === event.targetId);
-        if (target) this.windAnimations.set(target.id, { from: Math.max(0, target.wind - event.amount), to: target.wind, until: this.now + 260 });
+        if (target) {
+          this.windAnimations.set(target.id, { from: Math.max(0, target.windUpCharge - event.amount), to: target.windUpCharge, until: this.now + 260 });
+          this.windFlashes.set(target.id, this.now + 260);
+        }
       }
       if (event.kind === 'enemy' || event.kind === 'item') {
         const sourceActor = [...this.ui.state.heroes, ...this.ui.state.enemies].find(actor => actor.id === event.actorId);
@@ -161,26 +297,17 @@ export class PhaserHUD {
       }
     }
     for (const [id, animation] of this.windAnimations) if (animation.until < this.now) this.windAnimations.delete(id);
+    for (const [id, until] of this.windFlashes) if (until < this.now) this.windFlashes.delete(id);
   }
 
   private background(): void {
+    const tile = this.scene.add.tileSprite(0, 0, this.width, this.height, 'ui-background-tile').setOrigin(0).setTileScale(.32).setAlpha(.6);
+    this.root.add(tile);
     const g = this.scene.add.graphics();
-    g.fillStyle(0x171414, 1).fillRect(0, 0, this.width, this.height);
-    g.lineStyle(1, 0x362b2c, .22);
-    for (let diagonal = -this.height; diagonal < this.width; diagonal += 13) g.lineBetween(diagonal, 0, diagonal + this.height, this.height);
-    for (const panel of [this.left, this.right]) {
-      g.fillStyle(0x292329, 1).fillRoundedRect(panel.x, panel.y, panel.width, panel.height, 6);
-      g.lineStyle(2, 0x80664f, .95).strokeRoundedRect(panel.x, panel.y, panel.width, panel.height, 6);
-      g.lineStyle(1, 0x493941, .9).strokeRoundedRect(panel.x + 4, panel.y + 4, panel.width - 8, panel.height - 8, 4);
-      const s = 10, x = panel.x, y = panel.y, w = panel.width, h = panel.height;
-      g.lineStyle(2, 0xb28a5e, .95);
-      for (const [cx, cy, dx, dy] of [[x+4,y+4,1,1],[x+w-4,y+4,-1,1],[x+4,y+h-4,1,-1],[x+w-4,y+h-4,-1,-1]] as const) {
-        g.lineBetween(cx, cy, cx + dx * s, cy); g.lineBetween(cx, cy, cx, cy + dy * s);
-      }
-    }
+    g.fillStyle(0x100c10, .4).fillRect(0, 0, this.width, this.height);
     this.root.add(g);
+    this.panelTexture(this.right.x, this.right.y, this.right.width, this.right.height);
     const ornamentSize = Math.min(this.width < 820 ? 34 : 64, this.left.width * .08, this.left.height * .09);
-    this.frameCorners(this.left.x, this.left.y, this.left.width, this.left.height, ornamentSize, .9);
     this.frameCorners(this.right.x, this.right.y, this.right.width, this.right.height, ornamentSize, .9);
   }
 
@@ -200,176 +327,202 @@ export class PhaserHUD {
 
   private button(label: string, x: number, y: number, width: number, height: number, action: string, value = '', primary = false): void {
     const hot = this.hover?.action === action && this.hover.value === value;
-    const g = this.scene.add.graphics();
-    if (hot) {
-      g.fillStyle(primary ? 0xffd47a : 0xc19a68, .2).fillRoundedRect(x - 3, y - 3, width + 6, height + 6, 7);
+    if (this.scene.textures.exists('ui-button-plate')) {
+      const capWidth = Math.min(width * .28, height * 300 / 404);
+      const centerWidth = Math.max(1, width - capWidth * 2);
+      const tint = hot ? 0xfff1d4 : primary ? 0xffffff : 0xd0c1a8;
+      const plate = [
+        this.scene.add.image(x, y, 'ui-button-plate', 'left-cap').setOrigin(0).setDisplaySize(capWidth, height),
+        this.scene.add.image(x + capWidth, y, 'ui-button-plate', 'center').setOrigin(0).setDisplaySize(centerWidth, height),
+        this.scene.add.image(x + capWidth + centerWidth, y, 'ui-button-plate', 'right-cap').setOrigin(0).setDisplaySize(capWidth, height),
+      ];
+      plate.forEach(part => part.setTint(tint));
+      this.root.add(plate);
+      if (hot) {
+        const highlight = this.scene.add.graphics();
+        highlight.fillStyle(0xffe8ba, .12).fillRoundedRect(x + capWidth, y + height * .25, centerWidth, height * .5, Math.min(5, height * .15));
+        this.root.add(highlight);
+      }
+    } else {
+      const g = this.scene.add.graphics();
+      g.fillStyle(primary ? 0x74552f : 0x372e2c, 1).fillRoundedRect(x, y, width, height, 5);
+      g.lineStyle(1, primary ? 0xe7bf72 : 0x8a755c, 1).strokeRoundedRect(x, y, width, height, 5);
+      this.root.add(g);
     }
-    g.fillStyle(primary ? (hot ? 0xa77a3d : 0x74552f) : (hot ? 0x514337 : 0x372e2c), 1).fillRoundedRect(x, y, width, height, 5);
-    g.lineStyle(hot ? 2 : primary ? 2 : 1, primary ? (hot ? 0xffe4a2 : 0xe7bf72) : (hot ? 0xe0bd88 : 0x8a755c), 1).strokeRoundedRect(x, y, width, height, 5); this.root.add(g);
     if (label === '↻') this.text(label, x + width / 2, y + Math.max(3, (height - 20) / 2), Math.min(15, height * .43), hot ? '#ffffff' : '#fff0d4', width - 8, .5);
     else {
-      const caption = this.titleText(label, x + width / 2, y + height / 2, Math.min(21, height * .6), hot ? '#ffffff' : '#fff0d4', width - 12, .5);
+      const caption = this.titleText(label, x + width / 2, y + height / 2, Math.min(21, height * .43), hot ? '#ffffff' : '#fff0d4', width - 12, .5);
       caption.setOrigin(.5, .5);
     }
     this.zones.push({ x, y, width, height, action, value });
   }
 
   private header(): void {
-    const stageName = this.ui.run.stage === 'victory' ? 'МЕХАНИЗМ СУДЬБЫ ОДОЛЁН' : this.ui.run.stage === 'defeat' ? 'ПОСЛЕДНИЙ ЗАВОД ОСТАНОВЛЕН' : `АКТ ${Math.min(3, Math.ceil(this.ui.run.room / 3))} · СПУСК ${this.ui.run.room}/10`;
-    if (this.ui.run.stage !== 'opening') this.text(stageName, this.left.x, 8, Math.min(16, this.height * .022), '#dfc79e');
+    const stageName = this.ui.run.stage === 'victory' ? 'МЕХАНИЗМ СУДЬБЫ ОДОЛЁН' : this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ ${Math.min(3, Math.ceil(this.ui.run.room / 3))} · СПУСК ${this.ui.run.room}/10`;
+    if (this.ui.run.stage !== 'opening') {
+      const available = Math.max(40, this.width - 2 * (122 + this.left.x));
+      const panelW = Math.min(420, this.width * .57, available);
+      const panelH = Math.min(58, Math.max(54, this.height * .06));
+      const panelY = 3;
+      this.panelTexture((this.width - panelW) / 2, panelY, panelW, panelH);
+      const label = this.scene.add.text(this.width / 2, panelY + panelH / 2, stageName, {
+        fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: `${Math.round(Math.min(20, Math.max(16, this.height * .026)))}px`,
+        color: '#f2dfbd', stroke: '#171414', strokeThickness: 2, resolution: 2,
+      }).setOrigin(.5, .5);
+      if (label.width > panelW - 20) label.setScale((panelW - 20) / label.width);
+      this.root.add(label);
+    }
     if (this.ui.run.stage !== 'opening') this.button('↻', this.width - 42 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'restart');
-    if (this.ui.paused) this.text('ПАУЗА', this.width / 2, 8, 16, '#e8bd72', undefined, .5);
+    this.button('?', this.width - 82 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'help');
+    this.button('⛶', this.width - 122 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'fullscreen');
   }
 
-  private party(): void {
+  private party(drag?: DragPreview): void {
     const g = this.scene.add.graphics(); this.root.add(g);
     const heroes = [...this.ui.state.heroes].sort((a, b) => a.slot - b.slot);
     const gap = 7, footerH = this.ui.selectedItem ? (this.width < 820 ? 26 : 31) : 0;
     const cardW = (this.left.width - 12 - gap) / 2, cardH = (this.left.height - 12 - gap - footerH) / 2;
-    const pad = Math.max(12, Math.min(16, cardW * .035));
     const compact = this.width < 820;
-    const headerH = compact ? 86 : 128;
-    const cell = Math.max(1, Math.floor(Math.min((cardW - pad * 2) / INVENTORY_GRID_SIZE, (cardH - headerH - 16) / INVENTORY_GRID_SIZE)));
     for (let h = 0; h < heroes.length; h++) {
       const hero = heroes[h]!;
+      const classId = heroClassForActor(hero) ?? 'guard';
+      const theme = classCardThemes[classId];
+      const layout = dashboardLayout[classId];
       const x = this.left.x + 6 + (h % 2) * (cardW + gap), y = this.left.y + 6 + Math.floor(h / 2) * (cardH + gap);
+      const boardSize = Math.max(1, Math.min(cardW - 4, cardH - 4));
+      const boardX = x + (cardW - boardSize) / 2, boardY = y + (cardH - boardSize) / 2;
       const stopped = hero.status === 'stopped';
-      const pulse = stopped ? .76 + .14 * (Math.sin(this.now / 125) + 1) / 2 : 1;
-      const frameColor = stopped ? 0x929397 : hero.status === 'active' ? 0xd5aa68 : hero.status === 'dead' ? 0x76545c : 0xc19a78;
-      const cardFill = stopped ? 0x343438 : hero.status === 'active' ? 0x382b30 : hero.status === 'human' ? 0x30283a : 0x28232b;
-      const engravingColor = stopped ? 0xb9b9bc : 0xf4d8ad;
-      const rivetColor = stopped ? 0xa5a5a8 : 0xf0cf9b;
-      g.fillStyle(0x120f16, .65).fillRoundedRect(x, y + 2, cardW, cardH, 5);
-      g.fillStyle(cardFill, 1).fillRoundedRect(x, y, cardW, cardH, 5);
-      g.fillStyle(stopped ? 0x626267 : hero.status === 'human' ? 0x776080 : 0x5b4754, stopped ? .24 : .2).fillRoundedRect(x + 4, y + 4, cardW - 8, headerH - 4, 4);
-      // Layered iron and brass bevels make each card read as a framed portrait plate.
-      g.lineStyle(5, 0x17131a, .98).strokeRoundedRect(x, y, cardW, cardH, 5);
-      g.lineStyle(2.5, frameColor, pulse).strokeRoundedRect(x + 1, y + 1, cardW - 2, cardH - 2, 5);
-      g.lineStyle(1, engravingColor, .62).strokeRoundedRect(x + 4, y + 4, cardW - 8, cardH - 8, 4);
-      g.lineStyle(1, 0x785d55, .7).lineBetween(x + 8, y + headerH, x + cardW - 8, y + headerH);
-      // Short engraved corner brackets and rivets give the card a crafted metal frame.
-      const corner = 11;
-      g.lineStyle(1.5, frameColor, .88);
-      for (const [sx, sy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
-        const cx = sx > 0 ? x + 7 : x + cardW - 7, cy = sy > 0 ? y + 7 : y + cardH - 7;
-        g.lineBetween(cx, cy + sy * corner, cx, cy);
-        g.lineBetween(cx, cy, cx + sx * corner, cy);
-        g.fillStyle(rivetColor, .7).fillCircle(cx, cy, 1.5);
+      const chargeRatio = stopped ? Math.max(0, Math.min(1, hero.windUpCharge / Math.max(1, hero.maxWindUp))) : 0;
+      const windPulse = stopped ? (Math.sin(this.now / 125) + 1) / 2 : 0;
+      const flashUntil = this.windFlashes.get(hero.id) ?? 0;
+      const clickFlash = flashUntil > this.now ? (flashUntil - this.now) / 260 : 0;
+      g.fillStyle(0x050408, .7).fillRoundedRect(boardX + 3, boardY + 5, boardSize, boardSize, 5);
+      const board = this.scene.add.image(boardX, boardY, `ui-dashboard-${classId}`).setOrigin(0).setDisplaySize(boardSize, boardSize);
+      if (stopped) board.setTint(mixTint(0x777777, 0xf4dfad, chargeRatio * .65));
+      else if (hero.status === 'dead') board.setTint(0x777777);
+      this.root.add(board);
+      if (stopped && this.ui.state.phase === 'combat') this.zones.push({ x, y, width: cardW, height: cardH, action: 'wind', value: hero.id });
+      const isPuppet = hero.isPuppet;
+      this.actorImage(hero.id, boardX + boardSize * .2045, boardY + boardSize * .212, boardSize * .23, hero.status, theme.dollTint);
+      const nameX = boardX + boardSize * layout.labelX, nameY = boardY + boardSize * (compact ? .095 : layout.labelY);
+      const nameW = boardSize * layout.labelW;
+      const nameSize = Math.max(9, Math.min(compact ? 15 : 19, boardSize * .052));
+      let nameTextW = nameW;
+      let puppetBadge: { size: number; offset: number; color: number } | undefined;
+      if (isPuppet) {
+        const badgeSize = Math.min(compact ? 12 : 18, Math.max(compact ? 7 : 10, boardSize * (compact ? .036 : .042)), nameSize * .9);
+        const badgeInset = compact ? 3 : 5;
+        const badgeOffset = nameW / 2 - badgeSize / 2 - badgeInset;
+        const badgeColor = hero.status === 'dead' ? 0xaaa5a0 : stopped ? 0xb8b9bc : 0xf0bd64;
+        puppetBadge = { size: badgeSize, offset: badgeOffset, color: badgeColor };
+        nameTextW = Math.max(16, nameW - badgeSize * 2 - (compact ? 12 : 18));
       }
-      this.frameCorners(x, y, cardW, cardH, Math.min(compact ? 28 : 46, cardW * .11), stopped ? .7 : 1);
-      const iconSize = Math.min(compact ? 64 : 104, headerH - pad * 2);
-      const isDoll = hero.status === 'active' || hero.status === 'stopped';
-      const portraitPlate = this.scene.add.graphics();
-      portraitPlate.fillStyle(0x110e15, .9).fillRect(x + pad - 4, y + pad - 4, iconSize + 8, iconSize + 8);
-      portraitPlate.lineStyle(4, 0x19151c, 1).strokeRect(x + pad - 3, y + pad - 3, iconSize + 6, iconSize + 6);
-      portraitPlate.lineStyle(2, frameColor, .98).strokeRect(x + pad - 2, y + pad - 2, iconSize + 4, iconSize + 4);
-      portraitPlate.lineStyle(1, stopped ? 0xbdbdc0 : 0xffe5bd, .72).strokeRect(x + pad, y + pad, iconSize, iconSize);
-      for (const [rx, ry] of [[-1, -1], [iconSize + 1, -1], [-1, iconSize + 1], [iconSize + 1, iconSize + 1]])
-        portraitPlate.fillStyle(stopped ? 0xa8a8ab : 0xe4c18a, .84).fillCircle(x + pad + rx, y + pad + ry, 1.7);
-      this.root.add(portraitPlate);
-      this.actorImage(hero.id, x + pad + iconSize / 2, y + pad + iconSize / 2, iconSize, hero.status);
-      if (isDoll) {
-        const gearX = x + pad + iconSize - 1, gearY = y + pad + 10;
-        const gear = this.scene.add.graphics();
-        gear.fillStyle(0x241b19, 1).fillCircle(gearX, gearY, 9);
-        const gearColor = stopped ? 0x929397 : 0xf0bd64;
-        gear.lineStyle(1, gearColor, 1).strokeCircle(gearX, gearY, 9);
-        gear.lineStyle(2, gearColor, 1);
-        for (let tooth = 0; tooth < 8; tooth++) {
-          const angle = tooth * Math.PI / 4;
-          gear.lineBetween(gearX + Math.cos(angle) * 4, gearY + Math.sin(angle) * 4,
-            gearX + Math.cos(angle) * 7, gearY + Math.sin(angle) * 7);
-        }
-        gear.strokeCircle(gearX, gearY, 3);
-        this.root.add(gear);
-      }
-      const nameX = x + pad + iconSize + 8, nameW = Math.max(36, cardW - (nameX - x) - pad);
-      this.titleText(hero.name, nameX, y + pad, compact ? 15 : 24, stopped ? '#d5d5d8' : '#fff2d9', nameW);
-      const statusLabel = hero.status === 'human' ? 'ЖИВОЙ'
-        : hero.status === 'active' ? 'ЗАВЕДЕНА'
-        : hero.status === 'stopped' ? 'НУЖЕН ЗАВОД'
-        : hero.status === 'rebirthing' ? 'ВОЗВРАТ'
-        : 'ПОГИБ';
-      const statusColor = hero.status === 'human' ? 0x9a4050 : hero.status === 'active' ? 0x796137 : hero.status === 'stopped' ? 0x5c6068 : 0x49333b;
-      const statusY = y + pad + (compact ? 20 : 29);
-      let statusFontSize = Math.max(4, Math.round(Math.min(compact ? 8 : 10, (nameW - 12) / (statusLabel.length * .68))));
-      const statusText = this.scene.add.text(nameX + 5, statusY + 1, statusLabel, {
-        fontFamily: 'Georgia, "Times New Roman", serif', fontStyle: 'bold', fontSize: statusFontSize,
-        color: stopped ? '#e1e1e3' : '#f5e4c6', resolution: 1, stroke: '#171414', strokeThickness: 1,
-      }).setOrigin(0, 0);
-      while (statusText.width + 12 > nameW && statusFontSize > 4) statusText.setFontSize(--statusFontSize);
-      const statusWidth = Math.min(nameW, Math.ceil(statusText.width + 12));
-      const statusPlate = this.scene.add.graphics();
-      statusPlate.fillStyle(statusColor, .85).fillRoundedRect(nameX, statusY, statusWidth, compact ? 13 : 17, 4);
-      statusPlate.lineStyle(1, stopped ? 0xaaaab0 : 0xcba56e, .75).strokeRoundedRect(nameX, statusY, statusWidth, compact ? 13 : 17, 4);
-      this.root.add(statusPlate);
+      this.titleText(hero.name.toUpperCase(), nameX, nameY, nameSize, stopped || hero.status === 'dead' ? '#d5d5d8' : '#fff2d9', nameTextW, .5);
+      const statusLabel = actorStatus[hero.status].toUpperCase();
+      const statusY = nameY + nameSize - 1;
+      let statusFontSize = Math.max(8, Math.round(Math.min(compact ? 10 : 13, boardSize * .042, (nameW - 8) / (statusLabel.length * .58))));
+      const statusText = this.scene.add.text(nameX, statusY, statusLabel, {
+        fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: statusFontSize, letterSpacing: compact ? 0 : .2,
+        color: stopped || hero.status === 'dead' ? '#e5e2df' : '#f4e5cd', resolution: 2, stroke: '#171414', strokeThickness: 1,
+      }).setOrigin(.5, 0);
+      const statusWidth = isPuppet ? nameTextW : nameW - 8;
+      while (statusText.width > statusWidth && statusFontSize > 7) statusText.setFontSize(--statusFontSize);
+      if (statusText.width > statusWidth) statusText.setScale(statusWidth / statusText.width);
       this.root.add(statusText);
-      const detailY = y + pad + (compact ? 38 : 51);
-      const detailColor = stopped ? '#b9b9bd' : hero.status === 'active' ? '#e8c680' : '#ded0c5';
-      if (hero.status === 'human') {
-        this.cardGlyph('heart', nameX + 5, detailY + 7, 0xe95d68);
-        this.text(`${Math.ceil(hero.hp)} / ${hero.maxHp}`, nameX + 16, detailY, compact ? 9 : 11, '#ffe1d7', nameW - 16);
-      } else if (hero.status === 'stopped' || hero.status === 'active') {
-        this.cardGlyph('gear', nameX + 5, detailY + 7, stopped ? 0x99999d : 0xe2aa5e);
-        this.text(`${Math.ceil(hero.durability)}/${hero.maxDurability}`, nameX + 15, detailY, compact ? 8 : 10, detailColor, Math.max(40, nameW * .48));
-        this.cardGlyph('key', nameX + nameW * .53 + 4, detailY + 7, stopped ? 0x99999d : 0x70c6d6);
-        this.text(`${Math.ceil(hero.wind)}/${hero.maxWind}`, nameX + nameW * .53 + 13, detailY, compact ? 8 : 10, stopped ? '#b9b9bd' : '#a6e3e7', nameW * .47);
-      } else if (hero.status === 'rebirthing') this.text(`ВОЗВРАЩЕНИЕ · ${(hero.rebirthMs / 1000).toFixed(1)}с`, nameX, detailY, compact ? 8 : 10, '#e4bd76', nameW);
-      else this.text('ПОГИБ', nameX, detailY, compact ? 9 : 11, '#c4a9aa', nameW);
-      const meterY = y + pad + (compact ? 55 : 74), meterH = compact ? 4 : 6;
-      if (hero.status === 'human') this.meter(nameX, meterY, nameW, meterH, hero.hp, hero.maxHp, '', 0xed5e67);
-      else if (hero.status === 'stopped' || hero.status === 'active') {
-        this.meter(nameX, meterY, nameW, meterH, hero.durability, hero.maxDurability, '', stopped ? 0x858589 : 0xd4924d);
-        const animation = this.windAnimations.get(hero.id);
-        const shownWind = animation ? animation.from + (animation.to - animation.from) * Math.min(1, 1 - Math.max(0, animation.until - this.now) / 260) : hero.wind;
-        this.meter(nameX, meterY + (compact ? 6 : 9), nameW, meterH, shownWind, hero.maxWind, '', stopped ? 0xaaa9ad : 0x65c7ce);
-      } else if (hero.status === 'rebirthing') this.meter(nameX, meterY, nameW, meterH, 6000 - hero.rebirthMs, 6000, '', 0xd8a858);
-      const gridX = x + (cardW - INVENTORY_GRID_SIZE * cell) / 2;
-      const gridY = y + headerH + (cardH - headerH - INVENTORY_GRID_SIZE * cell) / 2;
+      if (puppetBadge) {
+        const badgeY = nameY + (nameSize + 2 + statusText.height) / 2;
+        this.puppetStateBadge(nameX - puppetBadge.offset, badgeY, puppetBadge.size, puppetBadge.color);
+        this.puppetStateBadge(nameX + puppetBadge.offset, badgeY, puppetBadge.size, puppetBadge.color);
+      }
+      const animation = this.windAnimations.get(hero.id);
+      const shownWind = animation ? animation.from + (animation.to - animation.from) * Math.min(1, 1 - Math.max(0, animation.until - this.now) / 260) : hero.windUpCharge;
+      this.resourceModule(boardX, boardY, boardSize, hero, shownWind);
+      const infoSize = Math.max(20, Math.min(28, boardSize * .09));
+      const infoX = boardX + boardSize - infoSize - Math.max(12, boardSize * .065), infoY = boardY + boardSize * .34;
+      this.button('', infoX, infoY, infoSize, infoSize, 'hero-info', hero.id);
+      const infoGlyph = this.scene.add.text(infoX + infoSize / 2, infoY + infoSize / 2, 'i', {
+        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(infoSize * .67)}px`,
+        color: '#f6e4c1', stroke: '#171014', strokeThickness: 2, resolution: 2,
+      }).setOrigin(.5, .5);
+      this.root.add(infoGlyph);
+      const cell = Math.max(1, Math.floor(boardSize * Math.min(layout.tray[2], layout.tray[3]) / INVENTORY_GRID_SIZE));
+      const gridSize = INVENTORY_GRID_SIZE * cell;
+      const gridX = boardX + boardSize * (layout.tray[0] + layout.tray[2] / 2) - gridSize / 2;
+      const gridY = boardY + boardSize * (layout.tray[1] + layout.tray[3] / 2) - gridSize / 2;
+      const gridMarks = this.scene.add.graphics();
       const itemOrigins: CombatItem[] = [];
       for (let i = 0; i < INVENTORY_CELL_COUNT; i++) {
         const cx = gridX + inventoryColumn(i) * cell, cy = gridY + inventoryRow(i) * cell;
         const item = hero.items.find(candidate => occupiedCells(candidate, candidate.cell ?? 0)?.includes(i));
         const occupied = item ? occupiedCells(item, item.cell ?? 0) : null;
         const isOrigin = item && occupied?.[0] === i;
-        g.fillStyle(stopped ? (item ? 0x3e3e42 : 0x29292d) : (item ? 0x493543 : 0x272330), 1).fillRect(cx, cy, cell - 1, cell - 1);
-        g.fillStyle(stopped ? (item ? 0x646469 : 0x4b4b50) : (item ? 0x77535a : 0x403547), stopped ? .16 : .2).fillRect(cx + 1, cy + 1, cell - 3, Math.max(2, cell * .22));
-        g.lineStyle(1, stopped ? (item ? 0x77777b : 0x66666a) : (item ? 0x9b7566 : 0x74677e), item ? .62 : .78).strokeRect(cx + .5, cy + .5, cell - 2, cell - 2);
-        g.lineStyle(1, stopped ? 0xc0c0c2 : 0xe6cda9, stopped ? .12 : .2).lineBetween(cx + 3, cy + 2, cx + cell - 4, cy + 2);
-        // Restrained scratches add worn paper grain without making each cell noisy.
-        for (let speck = 0; speck < 5; speck++) {
-          const px = cx + 4 + ((i * 7 + hero.slot * 11 + speck * 13) % Math.max(4, cell - 8));
-          const py = cy + 5 + ((i * 3 + hero.slot * 5 + speck * 9) % Math.max(4, cell - 10));
-          g.fillStyle(stopped ? (speck % 2 ? 0xb1b1b4 : 0x99999d) : (speck % 2 ? 0xb9a2c0 : 0xd0b28d), speck === 2 ? .2 : .11).fillRect(px, py, speck === 3 ? 2 : 1, 1);
-        }
-        this.zones.push({ x: cx, y: cy, width: cell, height: cell, action: 'cell', value: `${hero.id}:${i}`, heroId: hero.id, cell: i,
+        const puppetCell = hero.isPuppet ? getPuppetCellModifiers(hero, i)[0] : undefined;
+        if (puppetCell) gridMarks.fillStyle(theme.puppetCellTint, .23).fillRect(cx + 1, cy + 1, cell - 2, cell - 2);
+        const windCard = stopped && this.ui.state.phase === 'combat';
+        this.zones.push({ x: cx, y: cy, width: cell, height: cell, action: windCard ? 'wind' : 'cell', value: windCard ? hero.id : `${hero.id}:${i}`, heroId: hero.id, cell: i,
           itemId: item && occupied?.includes(i) ? item.id : undefined });
         this.cells.set(`${hero.id}:${i}`, { x: cx, y: cy, size: cell });
         if (item && occupied?.includes(i) && isOrigin) itemOrigins.push(item);
       }
+      this.root.add(gridMarks);
       const texture = this.scene.add.image(gridX + INVENTORY_GRID_SIZE * cell / 2, gridY + INVENTORY_GRID_SIZE * cell / 2, 'ui-inventory-texture')
-        .setDisplaySize(INVENTORY_GRID_SIZE * cell, INVENTORY_GRID_SIZE * cell).setAlpha(stopped ? .11 : .2);
+        .setDisplaySize(gridSize, gridSize).setAlpha(stopped ? .05 : .08);
       this.root.add(texture);
       const crispGrid = this.scene.add.graphics();
-      crispGrid.lineStyle(1, stopped ? 0xb3b3b8 : 0xb79a9e, stopped ? .42 : .57);
-      for (let row = 0; row < INVENTORY_GRID_SIZE; row++) for (let column = 0; column < INVENTORY_GRID_SIZE; column++) {
-        const cx = gridX + column * cell, cy = gridY + row * cell;
-        crispGrid.strokeRect(cx + .5, cy + .5, cell - 1, cell - 1);
-        crispGrid.lineStyle(1, stopped ? 0xe2e2e4 : 0xf3d5b4, stopped ? .12 : .2).lineBetween(cx + 2, cy + 2, cx + cell - 3, cy + 2);
-        crispGrid.lineStyle(1, stopped ? 0xb3b3b8 : 0xb79a9e, stopped ? .42 : .57);
+      crispGrid.lineStyle(1, stopped ? 0xbfc0c6 : theme.edge, .2);
+      for (let line = 1; line < INVENTORY_GRID_SIZE; line++) {
+        crispGrid.lineBetween(gridX + line * cell, gridY, gridX + line * cell, gridY + gridSize);
+        crispGrid.lineBetween(gridX, gridY + line * cell, gridX + gridSize, gridY + line * cell);
       }
       this.root.add(crispGrid);
       // Draw sprites only after every cell and grid line so the grid cannot cut through art.
-      for (const item of itemOrigins) this.drawItem(item, gridX, gridY, cell, stopped);
-      if (stopped && this.ui.state.phase === 'combat') {
-        this.text('↻', x + cardW - pad - 14, y + pad + 1, compact ? 16 : 22, '#a8a8ab');
-        this.zones.push({ x, y, width: cardW, height: headerH, action: 'wind', value: hero.id, actorId: hero.id });
+      for (const item of itemOrigins) this.drawItem(item, gridX, gridY, cell, stopped || hero.status === 'rebirthing');
+      const inspected = drag?.heroId === hero.id && drag.anchor !== undefined ? { ...drag.item, cell: drag.anchor } : hero.items.find(item => item.id === this.hover?.itemId);
+      const relations = inspected ? synergyTargets(inspected) : [];
+      const sourceCells = inspected ? occupiedCells(inspected, inspected.cell ?? 0) ?? [] : [];
+      if (relations.length && sourceCells.length) {
+        const glow = this.scene.add.graphics();
+        const around = new Set<number>();
+        for (const index of sourceCells) for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          const col = inventoryColumn(index) + dx!, row = inventoryRow(index) + dy!;
+          if (col >= 0 && col < INVENTORY_GRID_SIZE && row >= 0 && row < INVENTORY_GRID_SIZE) {
+            const next = row * INVENTORY_GRID_SIZE + col;
+            if (!sourceCells.includes(next)) around.add(next);
+          }
+        }
+        for (const index of around) {
+          const neighbour = hero.items.find(item => item.id !== inspected?.id && occupiedCells(item, item.cell ?? 0)?.includes(index));
+          const match = relations.find(rule => neighbour?.tags?.includes(rule.tag));
+          const color = match?.negative ? 0xf09d58 : match ? 0x78f2ad : 0xe3bf72;
+          const cx = gridX + inventoryColumn(index) * cell, cy = gridY + inventoryRow(index) * cell;
+          glow.fillStyle(color, match ? .26 : .12).fillRect(cx + 1, cy + 1, cell - 2, cell - 2);
+          glow.lineStyle(match ? 2 : 1, color, match ? 1 : .7).strokeRect(cx + 1, cy + 1, cell - 2, cell - 2);
+        }
+        this.root.add(glow);
+      }
+      if (hero.status === 'rebirthing') {
+        const dim = this.scene.add.graphics().fillStyle(0x070a0f, .37).fillRect(gridX, gridY, gridSize, gridSize);
+        this.root.add(dim);
+      }
+      if ((stopped || clickFlash > 0) && this.ui.state.phase === 'combat') {
+        const chargeGlow = this.scene.add.graphics();
+        chargeGlow.fillStyle(theme.puppetCellTint, Math.min(.42, .025 + chargeRatio * .16 + windPulse * .035 + clickFlash * .3)).fillRoundedRect(boardX + 3, boardY + 3, boardSize - 6, boardSize - 6, 4);
+        this.root.add(chargeGlow);
+        if (stopped) {
+          const promptY = boardY + boardSize * .60;
+          const promptWidth = boardSize * .90;
+          const promptX = boardX + boardSize / 2;
+          const promptHeight = Math.max(24, boardSize * .11);
+          this.panelTexture(promptX - promptWidth / 2, promptY, promptWidth, promptHeight);
+          const prompt = this.titleText('НАЖМИ, ЧТОБЫ ЗАВЕСТИ', promptX, promptY + promptHeight / 2, Math.max(11, Math.min(19, boardSize * .055)), '#ffe3a8', promptWidth - 14, .5).setOrigin(.5);
+          prompt.setAlpha(.75 + windPulse * .25);
+        }
       }
     }
     const rotateY = this.left.y + this.left.height - (compact ? 24 : 30);
     if (this.ui.selectedItem) {
       this.button('Повернуть ↻', this.left.x + 8, rotateY, compact ? 80 : 112, compact ? 22 : 28, 'rotate');
-      this.button('В запас', this.left.x + (compact ? 94 : 122), rotateY, compact ? 64 : 82, compact ? 22 : 28, 'store', this.ui.selectedItem);
+    this.button('На пол', this.left.x + (compact ? 94 : 122), rotateY, compact ? 64 : 82, compact ? 22 : 28, 'store', this.ui.selectedItem);
     }
   }
 
@@ -426,7 +579,7 @@ export class PhaserHUD {
     const artHeight = oddTurn ? art.content.width : art.content.height;
     const bounds = itemArtBounds(cells, anchorX, anchorY, cell, artWidth, artHeight);
     const { centerX, centerY } = bounds;
-    const inset = Math.max(2, cell * .09);
+    const inset = Math.max(1, cell * .04);
     const fitWidth = Math.max(1, bounds.right - bounds.left - inset * 2);
     const fitHeight = Math.max(1, bounds.bottom - bounds.top - inset * 2);
     const baseScale = Math.min(fitWidth / artWidth, fitHeight / artHeight);
@@ -459,17 +612,93 @@ export class PhaserHUD {
     }
   }
 
+  private recess(x: number, y: number, width: number, height: number, edge: number, bottom: number): void {
+    const g = this.scene.add.graphics();
+    g.fillStyle(0x08070a, .9).fillRect(x, y, width, height);
+    g.fillStyle(edge, .35).fillRect(x, y, width, 2).fillRect(x, y, 2, height);
+    g.fillStyle(0x08070a, .75).fillRect(x, y + height - 2, width, 2).fillRect(x + width - 2, y, 2, height);
+    g.fillStyle(bottom, 1).fillRect(x + 3, y + 3, Math.max(0, width - 6), Math.max(0, height - 6));
+    g.fillStyle(0x050408, .55).fillRect(x + 3, y + 3, Math.max(0, width - 6), 3).fillRect(x + 3, y + 3, 3, Math.max(0, height - 6));
+    g.fillStyle(0x08070a, .2).fillRect(x + 6, y + 6, Math.max(0, width - 9), 2).fillRect(x + 6, y + 6, 2, Math.max(0, height - 9));
+    this.root.add(g);
+  }
+
   private meter(x: number, y: number, width: number, height: number, value: number, max: number, label: string, color: number): void {
     const g = this.scene.add.graphics();
-    g.fillStyle(0x191719, 1).fillRoundedRect(x, y, width, height, 3);
-    g.fillStyle(color, 1).fillRoundedRect(x, y, width * Math.max(0, Math.min(1, value / Math.max(1, max))), height, 3); this.root.add(g);
+    const filled = Math.max(0, width - 4) * Math.max(0, Math.min(1, value / Math.max(1, max)));
+    g.fillStyle(0x08070a, 1).fillRoundedRect(x, y, width, height, 3);
+    g.lineStyle(1, 0xc1aa89, .45).strokeRoundedRect(x, y, width, height, 3);
+    if (filled > 0) {
+      g.fillStyle(color, 1).fillRoundedRect(x + 2, y + 2, filled, Math.max(2, height - 4), 2);
+      g.fillStyle(0xffe8cd, .3).fillRect(x + 3, y + 2, Math.max(0, filled - 2), 1);
+    }
+    this.root.add(g);
     if (label) this.text(label, x, y - (this.width < 820 ? 10 : 14), this.width < 820 ? 7 : 10, '#f0ddbd', width);
+  }
+
+  private resourceModule(boardX: number, boardY: number, boardSize: number, hero: Combatant, shownWind: number): void {
+    const isDoll = hero.status === 'active' || hero.status === 'stopped';
+    const isRebirthing = hero.status === 'rebirthing';
+    const sourceWidth = isDoll ? 1888 : 1840, sourceHeight = isDoll ? 412 : 391;
+    const width = boardSize * .50, height = boardSize * .09;
+    const capWidth = height * 300 / sourceHeight, middleWidth = Math.max(1, width - capWidth * 2);
+    const x = boardX + boardSize * .66 - width / 2;
+    const y = boardY + boardSize * .288 - height / 2;
+    const g = this.scene.add.graphics();
+    const mapX = (fraction: number): number => {
+      const sourceX = fraction * sourceWidth;
+      if (sourceX <= 300) return x + sourceX * capWidth / 300;
+      if (sourceX >= sourceWidth - 300) return x + width - (sourceWidth - sourceX) * capWidth / 300;
+      return x + capWidth + (sourceX - 300) / (sourceWidth - 600) * middleWidth;
+    };
+    const liquid = (left: number, top: number, right: number, bottom: number, value: number, max: number, color: number): void => {
+      const ratio = Math.max(0, Math.min(1, value / Math.max(1, max)));
+      const lx = mapX(left), fillWidth = (mapX(right) - lx) * ratio;
+      if (fillWidth <= 0) return;
+      const ly = y + height * top, h = Math.max(1, height * (bottom - top));
+      g.fillStyle(color, .3).fillRoundedRect(lx - 1, ly - 1, fillWidth + 2, h + 2, Math.min(3, h / 2));
+      g.fillStyle(color, .96).fillRoundedRect(lx, ly, fillWidth, h, Math.min(2, h / 2));
+      g.fillStyle(0xfff1dc, .22).fillRect(lx + 1, ly + 1, Math.max(0, fillWidth - 2), Math.max(1, h * .15));
+    };
+    const health = isDoll ? hero.durability : hero.hp;
+    const healthKey = `card-${hero.id}-${isDoll ? 'doll' : 'human'}`;
+    const previousHealth = this.displayedHealth.get(healthKey);
+    const shownHealth = previousHealth ? previousHealth.value + (health - previousHealth.value) * (1 - Math.exp(-Math.max(0, this.now - previousHealth.at) / 250)) : health;
+    this.displayedHealth.set(healthKey, { value: shownHealth, at: this.now });
+    if (isDoll) {
+      liquid(.145, .20, .85, .55, shownHealth, hero.maxDurability, 0xce3653);
+      liquid(.145, .77, .85, .87, shownWind, hero.maxWindUp, 0xe4aa49);
+    } else if (isRebirthing) {
+      liquid(.16, .33, .84, .69, COMBAT_CONFIG.rebirthMs - hero.rebirthMs, COMBAT_CONFIG.rebirthMs, 0x59c9c5);
+    } else if (hero.status === 'human') {
+      liquid(.16, .33, .84, .69, shownHealth, hero.maxHp, 0xce3653);
+    }
+    this.root.add(g);
+    const key = isDoll ? 'ui-tube-double' : 'ui-tube-single';
+    const leftCap = this.scene.add.image(x, y, key, 'left-cap').setOrigin(0).setDisplaySize(capWidth, height);
+    const middle = this.scene.add.image(x + capWidth, y, key, 'glass-middle').setOrigin(0).setDisplaySize(middleWidth, height);
+    const rightCap = this.scene.add.image(x + capWidth + middleWidth, y, key, 'right-cap').setOrigin(0).setDisplaySize(capWidth, height);
+    this.root.add([leftCap, middle, rightCap]);
+    if (height >= 16 && (hero.status === 'human' || isDoll)) {
+      const current = isDoll ? hero.durability : hero.hp;
+      const maximum = isDoll ? hero.maxDurability : hero.maxHp;
+      const value = this.scene.add.text(x + width / 2, y + height * .5, `${Math.ceil(current)} / ${maximum}`, {
+        fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: `${Math.round(Math.max(12, Math.min(16, height * .56)))}px`,
+        color: '#fff1dc', stroke: '#171016', strokeThickness: 2, resolution: 2,
+      }).setOrigin(.5, .5);
+      value.setShadow(0, 1, '#100b10', 2, false, true);
+      this.root.add(value);
+    }
   }
 
   private room(drag?: DragPreview): void {
     const run = this.ui.run, state = this.ui.state;
-    const title = run.stage === 'victory' ? 'Архонт повержен' : run.stage === 'defeat' ? 'Завод остановлен' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? 'Тишина после боя' : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
-    if (run.stage !== 'opening') this.titleText(title, this.right.x + 8, this.right.y + 4, this.width < 820 ? 16 : 23, '#f2d39a', this.right.width - 16);
+    const title = run.stage === 'victory' ? 'Архонт повержен' : run.stage === 'defeat' ? 'Конец пути' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? 'Тишина после боя' : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
+    this.panelTexture(this.right.x + 5, this.right.y + 3, this.right.width - 10, 27);
+    if (run.stage !== 'opening') {
+      const heading = this.titleText(title, this.right.x + this.right.width / 2, this.right.y + 16, this.width < 820 ? 15 : 19, '#f2d39a', this.right.width - 48, .5);
+      heading.setOrigin(.5, .5);
+    }
     if (run.stage !== 'battle') this.roomBackdrop(true);
     if (run.stage === 'battle') this.battlefield();
     else if (run.stage === 'route') this.choices();
@@ -478,6 +707,11 @@ export class PhaserHUD {
     else if (run.stage === 'event') this.event();
     else if (run.stage === 'cleared') this.cleared();
     else if (run.stage === 'victory' || run.stage === 'defeat') { this.battlefield(); this.ending(); }
+    if (drag && !this.ui.run.offers.includes(drag.item) && (state.phase === 'preparation' || state.phase === 'result') && run.stage !== 'victory' && run.stage !== 'defeat') {
+      const x = this.right.x + 12, y = this.right.y + this.right.height - 110, w = this.right.width - 24;
+      this.panelTexture(x, y, w, 48); this.text('Оставить вещь на полу', x + w / 2, y + 15, 13, '#efd4a8', w - 12, .5);
+      this.zones.push({ x, y, width: w, height: 48, action: 'floor-drop' });
+    }
     if (drag?.heroId && drag.anchor !== undefined) this.drawDropFootprint(drag);
   }
 
@@ -487,24 +721,59 @@ export class PhaserHUD {
     const scale = Math.max(this.width / background.width, this.height / background.height);
     background.setScale(scale);
     this.root.add(background);
-    const w = Math.min(this.width - 28, 600, (this.height - 28) * 3), h = w / 3;
-    const x = (this.width - w) / 2, y = (this.height - h) / 2;
+
+    const selectorH = Math.max(32, Math.min(40, this.height * .055));
+    const optionH = Math.max(30, Math.min(38, this.height * .05));
+    const menuExtra = this.ui.startLoadoutMenuOpen ? 4 + optionH * 2 : 0;
+    const verticalLimit = Math.max(60, this.height * .50 - selectorH - menuExtra);
+    const w = Math.min(this.width - 28, 600, verticalLimit * 3);
+    const h = w / 3;
+    const selectorW = Math.min(360, w * .82, this.width - 32);
+    const groupH = h + 12 + selectorH + menuExtra;
+    const groupY = Math.max(this.height * .42, (this.height - groupH) / 2 + Math.min(40, this.height * .06));
+    const x = (this.width - w) / 2, y = groupY;
+    const logo = this.scene.add.image(this.width / 2, 0, 'ui-woundbound-logo').setOrigin(.5, 0);
+    const logoWidth = Math.min(this.width * .84, 820, Math.max(1, y - 12) * logo.width / logo.height);
+    const logoHeight = logoWidth * logo.height / logo.width;
+    logo.setPosition(this.width / 2, Math.max(4, y - logoHeight - 18)).setDisplaySize(logoWidth, logoHeight); this.root.add(logo);
     const hot = this.hover?.action === 'begin-run';
-    const glow = this.scene.add.graphics();
-    glow.fillStyle(0xe3a64c, hot ? .14 : .06).fillEllipse(this.width / 2, this.height / 2, w * .9, h * .8);
-    this.root.add(glow);
-    const plate = this.scene.add.image(this.width / 2, this.height / 2, 'ui-descent-button').setDisplaySize(w, h);
-    if (hot) plate.setTint(0xffe3b2);
+    const delta = this.openingHoverAt ? Math.min(100, this.now - this.openingHoverAt) : 0;
+    this.openingHoverAt = this.now;
+    this.openingHover += ((hot ? 1 : 0) - this.openingHover) * (1 - Math.exp(-delta / 110));
+    const hover = this.openingHover;
+    const tick = Math.floor(this.now / 180) % 14;
+    const buttonScale = 1 + hover * .018 + (tick === 0 ? .012 : tick === 1 ? .006 : 0);
+    const plate = this.scene.add.image(this.width / 2, y + h / 2, 'ui-descent-button').setDisplaySize(w * buttonScale, h * buttonScale);
     this.root.add(plate);
-    const size = Math.round(Math.min(54, w * .092));
+    if (hover > .01 || tick < 2) {
+      const light = this.scene.add.image(this.width / 2, y + h / 2, 'ui-descent-button')
+        .setDisplaySize(w * buttonScale, h * buttonScale).setTint(0xffc878)
+        .setBlendMode('ADD').setAlpha(hover * .24 + (tick === 0 ? .12 : .03));
+      this.root.add(light);
+    }
+    const size = Math.round(Math.min(66, w * .115));
     const label = this.scene.add.text(this.width / 2, y + h / 2 - 4, 'Начать спуск', {
       fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: `${size}px`,
-      color: '#F2E6D5', stroke: '#2b130f', strokeThickness: 3, resolution: 2,
+      color: hot ? '#fff2d1' : '#F2E6D5', stroke: '#2b130f', strokeThickness: 3, resolution: 2,
       shadow: { offsetX: 0, offsetY: 2, color: 'rgba(26, 13, 8, 0.75)', blur: 3, fill: true },
     }).setOrigin(.5);
-    if (label.width > w * .65) label.setScale(w * .65 / label.width);
+    label.setScale(Math.min(1, w * .78 / label.width) * (1 + hover * .025));
     this.root.add(label);
     this.zones.push({ x, y, width: w, height: h, action: 'begin-run', value: '' });
+
+    const selectorY = y + h + 12;
+    const modeLabel = this.ui.startingLoadout === 'full' ? 'Полный инвентарь ▾' : 'Начальные вещи ▾';
+    this.button(modeLabel, (this.width - selectorW) / 2, selectorY, selectorW, selectorH, 'toggle-start-loadout');
+    if (this.ui.startLoadoutMenuOpen) {
+      const options = [
+        { id: 'full', label: 'Полный инвентарь · для теста' },
+        { id: 'starter', label: 'Начальный комплект' },
+      ] as const;
+      options.forEach((option, index) => {
+        this.button(option.label, (this.width - selectorW) / 2, selectorY + selectorH + 4 + index * optionH,
+          selectorW, optionH, 'set-start-loadout', option.id, this.ui.startingLoadout === option.id);
+      });
+    }
   }
 
   private roomBackdrop(dim: boolean): void {
@@ -542,7 +811,7 @@ export class PhaserHUD {
       top: this.field.y + this.field.height * .27,
       bottom: this.field.y + this.field.height * .88,
     };
-    const now = this.now;
+    const now = Math.floor(this.now / 90) * 90;
     const action = this.ui.latestAction && now < this.ui.highlightUntil ? this.ui.latestAction : undefined;
     const enemyTarget = this.ui.state.enemies.find(enemy => enemy.status === 'enemy');
     const heroFormation = new Map<string, { lane: 'front' | 'rear' | 'flank'; rank: number; count: number }>();
@@ -570,10 +839,24 @@ export class PhaserHUD {
       const lunge = action?.actorId === actor.id && (actor.reach ?? 'near') === 'near' ? (hero ? 1 : -1) * this.field.width * .085 * Math.sin(Math.PI * (1 - (this.ui.highlightUntil - now) / 700)) : 0;
       return { x: Math.max(ground.left, Math.min(ground.right, x + lunge)), y: Math.max(ground.top, Math.min(ground.bottom, y)), scale: .76 + (baseY - ground.top) / Math.max(1, ground.bottom - ground.top) * .44 };
     };
-    const units = [...this.ui.state.heroes.map((actor, index) => ({ actor, hero: true, index })), ...this.ui.state.enemies.map((actor, index) => ({ actor, hero: false, index }))];
+    const units = [...this.ui.state.heroes.filter(actor => !this.priorRoomDead.has(actor.id)).map((actor, index) => ({ actor, hero: true, index })), ...this.ui.state.enemies.map((actor, index) => ({ actor, hero: false, index }))];
     for (const unit of units) {
       const position = actorPosition(unit.actor, unit.hero, unit.index);
       positions.set(unit.actor.id, { ...position, actor: unit.actor, hero: unit.hero, index: unit.index });
+    }
+    // Keep active actors' feet apart on the ground plane while allowing front and rear rows to overlap in depth.
+    const standing = [...positions.values()].filter(position => position.actor.status !== 'dead' && position.actor.status !== 'rebirthing');
+    const baseSize = Math.min(this.width < 820 ? 132 : 220, this.field.height * (this.width < 820 ? .4 : .39));
+    for (let pass = 0; pass < 6; pass++) {
+      for (let i = 0; i < standing.length; i++) for (let j = i + 1; j < standing.length; j++) {
+        const a = standing[i]!, b = standing[j]!;
+        const separation = baseSize * (a.scale + b.scale) * .30;
+        if (Math.abs(a.y - b.y) > baseSize * (a.scale + b.scale) * .12 || Math.abs(a.x - b.x) >= separation) continue;
+        const direction = a.x === b.x ? (a.index <= b.index ? -1 : 1) : Math.sign(a.x - b.x);
+        const shift = (separation - Math.abs(a.x - b.x)) / 2;
+        a.x = Math.max(ground.left, Math.min(ground.right, a.x + direction * shift));
+        b.x = Math.max(ground.left, Math.min(ground.right, b.x - direction * shift));
+      }
     }
     this.root.bringToTop(this.actorLayer);
     this.actorLayer.setVisible(true);
@@ -588,20 +871,29 @@ export class PhaserHUD {
       this.syncActorPose(actor, view, now);
       const actorSeed = [...actor.id].reduce((sum, character) => sum + character.charCodeAt(0), 0);
       const positionPhase = (x / Math.max(1, this.width)) * (y / Math.max(1, this.height)) * Math.PI * 5;
-      view.motion.y = actor.status === 'dead' ? 0 : -0.8 - 0.8 * Math.sin(now / 360 + positionPhase + actorSeed * 0.17);
+      view.motion.y = actor.status === 'dead' || actor.status === 'stopped' ? 0 : actor.status === 'rebirthing' ? -1.5 - 1.5 * Math.sin(now / 650 + positionPhase) : -0.8 - 0.8 * Math.sin(now / 360 + positionPhase + actorSeed * 0.17);
       view.container.setPosition(x, y).setDepth(y);
       this.sizeActorBody(view, artSize);
       // Hero sheets face right; enemy sheets are authored facing left toward the party.
       view.body.setFlipX(actor.side === 'enemy');
       view.shadow.clear().fillStyle(0x09090c, .34).fillEllipse(0, artSize * .43, artSize * .62, artSize * .16);
-      view.meter.clear().fillStyle(0x191719, .95).fillRoundedRect(-artSize * .42, artSize * .45, artSize * .84, this.width < 820 ? 5 : 7, 3);
+      view.meter.clear().fillStyle(0x191719, .95).fillRoundedRect(-artSize * .30, artSize * .45, artSize * .60, this.width < 820 ? 5 : 7, 3);
       const current = actor.status === 'active' || actor.status === 'stopped' || actor.status === 'dead' ? actor.durability : actor.hp;
       const max = actor.status === 'active' || actor.status === 'stopped' || actor.status === 'dead' ? actor.maxDurability : actor.maxHp;
+      const previous = this.displayedHealth.get(actor.id);
+      const shown = previous ? previous.value + (current - previous.value) * (1 - Math.exp(-Math.max(0, now - previous.at) / 250)) : current;
+      this.displayedHealth.set(actor.id, { value: shown, at: now });
       view.meter.setVisible(actor.status !== 'rebirthing' && actor.status !== 'dead');
-      view.meter.fillStyle(hero ? 0x79c36b : 0xe05b59, 1).fillRoundedRect(-artSize * .42, artSize * .45, artSize * .84 * Math.max(0, Math.min(1, current / Math.max(1, max))), this.width < 820 ? 5 : 7, 3);
+      view.meter.fillStyle(hero ? 0x79c36b : 0xe05b59, 1).fillRoundedRect(-artSize * .30, artSize * .45, artSize * .60 * Math.max(0, Math.min(1, shown / Math.max(1, max))), this.width < 820 ? 5 : 7, 3);
       view.body.setAlpha(actor.status === 'dead' ? .56 : actor.status === 'rebirthing' ? .78 : 1);
       const rogueFading = hero && actor.role === 'rogue' && action?.actorId === actor.id;
-      if (actor.status === 'stopped') view.body.setTint(0xe6e6e8);
+      const actorClass = hero ? heroClassForActor(actor) : undefined;
+      const dollTint = actorClass ? classCardThemes[actorClass].dollTint : 0xffffff;
+      if (actor.status === 'stopped') {
+        const chargeRatio = Math.max(0, Math.min(1, actor.windUpCharge / Math.max(1, actor.maxWindUp)));
+        view.body.setTint(mixTint(0x85868d, 0xffe6a6, .2 + chargeRatio * .8));
+      }
+      else if (actor.status === 'active') view.body.setTint(mixTint(0xffffff, dollTint, .82));
       else if (action?.actorId === actor.id) view.body.setTint(0xffe0a0);
       else if (action?.targetId === actor.id) view.body.setTint(0xff9a84);
       else view.body.clearTint();
@@ -611,11 +903,16 @@ export class PhaserHUD {
       const doll = actor.status === 'active' || actor.status === 'stopped';
       view.key.setVisible(doll);
       if (doll) {
-        view.key.lineStyle(2, actor.status === 'stopped' ? 0x96969a : 0xf0bd64, 1)
-          .strokeCircle(-4, -artSize * .34, Math.max(3, artSize * .065))
-          .lineBetween(-1, -artSize * .34, artSize * .13, -artSize * .34)
-          .lineBetween(artSize * .04, -artSize * .34, artSize * .04, -artSize * .25)
-          .lineBetween(artSize * .1, -artSize * .34, artSize * .1, -artSize * .28);
+        const keyColor = actor.status === 'stopped' ? 0xb7b7bb : 0xf0bd64;
+        const keySize = Math.max(5, artSize * .095);
+        view.key.setPosition(0, -artSize * .4);
+        view.key.lineStyle(2, 0x302329, 1).strokeCircle(0, 0, keySize * .4)
+          .strokeEllipse(-keySize * .65, 0, keySize, keySize * 1.15)
+          .strokeEllipse(keySize * .65, 0, keySize, keySize * 1.15);
+        view.key.lineStyle(1.4, keyColor, 1).strokeCircle(0, 0, keySize * .36)
+          .strokeEllipse(-keySize * .65, 0, keySize * .85, keySize)
+          .strokeEllipse(keySize * .65, 0, keySize * .85, keySize)
+          .lineBetween(-keySize * .3, 0, keySize * .3, 0);
         const winding = Math.max(0, Math.min(1, 1 - (view.windUntil - now) / 180));
         view.key.rotation = actor.status === 'stopped' ? -.45 + winding * Math.PI * 2 : Math.sin(now / 100) * .2;
       }
@@ -654,13 +951,13 @@ export class PhaserHUD {
   private getActorView(actor: Combatant, sprite: string): BattlefieldActorView {
     const archetype = (sprite in ACTOR_ROWS ? sprite : 'rat') as ActorSpriteId;
     const pose = this.defaultActorPose(actor);
-    const frame = actorStateFrame(archetype, pose);
+    const frame = this.actorFrameFor(actor, archetype, pose);
     const existing = this.actorViews.get(actor.id);
     if (existing) {
       if (existing.archetype !== archetype) {
         existing.archetype = archetype;
-        existing.frame = actorStateFrame(archetype, existing.pose);
-        existing.body.setTexture(this.actorPoseTexture(existing.pose), existing.frame);
+        existing.frame = this.actorFrameFor(actor, archetype, existing.pose);
+        existing.body.setTexture(this.actorTextureFor(actor, existing.pose), existing.frame);
       }
       return existing;
     }
@@ -668,7 +965,7 @@ export class PhaserHUD {
     const shadow = this.scene.add.graphics();
     const motion = this.scene.add.container(0, 0);
     const action = this.scene.add.container(0, 0);
-    const body = this.scene.add.sprite(0, 0, this.actorPoseTexture(pose), frame);
+    const body = this.scene.add.sprite(0, 0, this.actorTextureFor(actor, pose), frame);
     const meter = this.scene.add.graphics();
     const label = this.scene.add.text(0, 0, '', { fontFamily: 'Georgia, serif', fontSize: '11px', color: '#fff0d7', stroke: '#21171c', strokeThickness: 3, align: 'center' }).setOrigin(.5);
     const key = this.scene.add.graphics().setVisible(false);
@@ -689,6 +986,16 @@ export class PhaserHUD {
     return pose === 'dollStopped' ? 'doll-stopped' : 'actor-states';
   }
 
+  private actorTextureFor(actor: Combatant, pose: ActorSpriteState): string {
+    return actor.side === 'hero' && actor.status === 'dead' ? 'puppet-deaths' : this.actorPoseTexture(pose);
+  }
+
+  private actorFrameFor(actor: Combatant, archetype: ActorSpriteId, pose: ActorSpriteState): number {
+    return actor.side === 'hero' && actor.status === 'dead'
+      ? portraitFrames[actor.id] ?? 0
+      : actorStateFrame(archetype, pose);
+  }
+
   private sizeActorBody(view: BattlefieldActorView, size: number): void {
     const transform = view.pose === 'dollStopped' ? stoppedDollTransform(view.archetype) : { scale: 1, x: 0, y: 0 };
     const displaySize = size * transform.scale;
@@ -698,19 +1005,22 @@ export class PhaserHUD {
 
   private syncActorPose(actor: Combatant, view: BattlefieldActorView, now: number): void {
     if (actor.status === 'dead') {
-      if (view.pose !== 'death' || view.frame !== actorStateFrame(view.archetype, 'death')) {
+      const frame = this.actorFrameFor(actor, view.archetype, 'death');
+      const texture = this.actorTextureFor(actor, 'death');
+      if (view.pose !== 'death' || view.frame !== frame || view.body.texture.key !== texture) {
         view.pose = 'death';
-        view.frame = actorStateFrame(view.archetype, 'death');
-        view.body.setTexture('actor-states', view.frame);
+        view.frame = frame;
+        view.body.setTexture(texture, frame);
       }
       return;
     }
     const temporary = view.pose === 'attack' || view.pose === 'hit' || view.pose === 'dollAttack';
     const pose = temporary && now < view.poseUntil ? view.pose : this.defaultActorPose(actor);
-    if (pose === view.pose && view.frame === actorStateFrame(view.archetype, pose)) return;
+    const frame = this.actorFrameFor(actor, view.archetype, pose);
+    if (pose === view.pose && view.frame === frame) return;
     view.pose = pose;
-    view.frame = actorStateFrame(view.archetype, pose);
-    view.body.setTexture(this.actorPoseTexture(pose), view.frame);
+    view.frame = frame;
+    view.body.setTexture(this.actorTextureFor(actor, pose), frame);
   }
 
   private setActorPose(view: BattlefieldActorView, pose: ActorSpriteState, durationMs: number): void {
@@ -724,9 +1034,9 @@ export class PhaserHUD {
   private animateActorEvent(event: CombatEvent, positions: Map<string, { x: number; y: number; scale: number; actor: Combatant; hero: boolean; index: number }>): void {
     const target = this.actorViews.get(event.targetId);
     if (event.kind === 'wind') {
+      if (target) target.windUntil = this.now + 180;
       if (target && this.now >= target.motionUntil) {
         target.motionUntil = this.now + 180;
-        target.windUntil = this.now + 180;
         this.setActorPose(target, 'dollAttack', 180);
       }
       return;
@@ -769,48 +1079,82 @@ export class PhaserHUD {
   private rewards(): void {
     const offers = this.ui.run.offers, compact = this.width < 820;
     const gap = compact ? 6 : 10;
-    const y0 = this.field.y + 3;
-    const available = Math.max(1, this.right.y + this.right.height - 48 - y0);
-    const height = Math.max(58, Math.min(compact ? 96 : 166, (available - gap * Math.max(0, offers.length - 1)) / Math.max(1, offers.length)));
+    const y0 = this.field.y + 5;
+    const available = Math.max(1, this.right.y + this.right.height - (compact ? 14 : 30) - y0);
+    const height = Math.max(58, Math.min(compact ? 112 : 166, (available - gap * Math.max(0, offers.length - 1)) / Math.max(1, offers.length)));
     offers.forEach((item, index) => {
       const x = this.right.x + 12, y = y0 + index * (height + gap), w = this.right.width - 24;
       const color = itemRarityTint(item.rarity);
+      const hot = this.hover?.action === 'claim' && this.hover.value === item.id;
       const iconSize = Math.min(height - 14, compact ? 62 : 102);
       const iconWell = { x: x + 7, y: y + 7, width: iconSize + 14, height: height - 14 };
       const iconX = iconWell.x + iconWell.width / 2, iconY = y + height / 2;
       const textX = iconWell.x + iconWell.width + (compact ? 12 : 18), textWidth = Math.max(50, w - (textX - x) - 12);
+      this.panelTexture(x, y, w, height);
       const g = this.scene.add.graphics();
-      g.fillStyle(0x211b22, .98).fillRoundedRect(x, y, w, height, 6);
-      g.fillStyle(color, .16).fillRoundedRect(x + 2, y + 2, w - 4, height - 4, 5);
-      g.lineStyle(2, color, .95).strokeRoundedRect(x, y, w, height, 6);
-      g.lineStyle(1, 0xe2c18a, .64).strokeRoundedRect(x + 4, y + 4, w - 8, height - 8, 4);
+      g.fillStyle(color, hot ? .25 : .14).fillRoundedRect(x + 2, y + 2, w - 4, height - 4, 5);
+      g.lineStyle(hot ? 3 : 2, hot ? mixTint(color, 0xfff0d0, .28) : color, .98).strokeRoundedRect(x, y, w, height, 6);
+      g.lineStyle(1, 0xe2c18a, hot ? .82 : .58).strokeRoundedRect(x + 4, y + 4, w - 8, height - 8, 4);
       this.root.add(g);
-      const iconPlate = this.scene.add.graphics();
-      iconPlate.fillStyle(0x17151b, .94).fillRoundedRect(iconWell.x, iconWell.y, iconWell.width, iconWell.height, 5);
-      iconPlate.fillStyle(color, .22).fillRoundedRect(iconWell.x + 2, iconWell.y + 2, iconWell.width - 4, iconWell.height - 4, 4);
-      iconPlate.lineStyle(1.5, color, .85).strokeRoundedRect(iconWell.x, iconWell.y, iconWell.width, iconWell.height, 5);
-      iconPlate.lineStyle(1, 0xe2c18a, .42).strokeRoundedRect(iconWell.x + 3, iconWell.y + 3, iconWell.width - 6, iconWell.height - 6, 4);
-      this.root.add(iconPlate);
+      this.panelTexture(iconWell.x, iconWell.y, iconWell.width, iconWell.height);
       this.frameCorners(x, y, w, height, Math.min(compact ? 24 : 40, height * .3), .95);
-      this.itemImage(item, iconX, iconY, iconSize);
-      const titleY = y + (compact ? 8 : 12);
-      const title = this.titleText(item.name, textX, titleY, compact ? 15 : 22, '#fff0cf', textWidth);
-      const titleSpace = compact ? 17 : 24;
+      this.itemImage(item, iconX, iconY, iconSize * 1.1);
+      const titleY = y + (compact ? 11 : 20);
+      const ctaW = Math.min(compact ? 82 : 126, w * .25);
+      const ctaH = compact ? 30 : 36;
+      const ctaX = x + w - ctaW - (compact ? 22 : 24);
+      const copyWidth = Math.max(50, Math.min(textWidth - ctaW - 12, 65 * (compact ? 13 : 24) * .53));
+      const title = this.titleText(item.name, textX, titleY, compact ? 14 : 24, '#fff0cf', copyWidth);
+      const titleSpace = compact ? 19 : 27;
       if (title.displayHeight > titleSpace) title.setScale(title.scaleX * titleSpace / title.displayHeight);
       const rarityText = `${rarityLabels[item.rarity ?? 'common']}  ·  ${categoryLabels[item.category ?? 'relic']}`;
-      this.text(rarityText, textX, titleY + (compact ? 18 : 25), compact ? 8 : 11, `#${color.toString(16).padStart(6, '0')}`, textWidth);
-      const descY = titleY + (compact ? 35 : 47);
-      const description = this.text(item.description ?? '', textX, descY, compact ? 9 : 12, '#e5d8c5', textWidth);
-      const descriptionSpace = Math.max(1, y + height - (height >= 100 ? (compact ? 22 : 28) : 7) - descY);
-      if (description.height > descriptionSpace) description.setScale(descriptionSpace / description.height);
-      if (height >= 100) {
-        const stats = item.effect === 'wind' ? `ЗАВОД +${item.windAmount ?? 0}  ·  КУЛДАУН ${(item.cooldownMs / 1000).toFixed(1)}с`
-          : item.effect === 'heal' ? `ЛЕЧЕНИЕ ${item.damage}  ·  КУЛДАУН ${(item.cooldownMs / 1000).toFixed(1)}с`
-          : item.trigger === 'passive' ? 'ПАССИВНЫЙ ЭФФЕКТ'
-          : `УРОН ${item.damage}  ·  КУЛДАУН ${(item.cooldownMs / 1000).toFixed(1)}с`;
-        this.text(stats, textX, y + height - (compact ? 18 : 23), compact ? 8 : 10, '#f0c96c', textWidth);
+      const rarity = this.scene.add.text(textX, titleY + (compact ? 17 : 29), rarityText, {
+        fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: `${compact ? 11 : 13}px`,
+        color: item.rarity === 'common' || !item.rarity ? '#cfcbd0' : `#${mixTint(color, 0xffffff, .18).toString(16).padStart(6, '0')}`, stroke: '#171414', strokeThickness: 1, resolution: 2,
+      });
+      if (rarity.width > copyWidth) rarity.setScale(copyWidth / rarity.width);
+      this.root.add(rarity);
+      const descY = titleY + (compact ? 31 : 52);
+      const descriptionWidth = copyWidth;
+      const description = this.scene.add.text(textX, descY, item.description ?? '', {
+        fontFamily: 'Arial, sans-serif', fontSize: `${compact ? 11 : 15}px`, lineSpacing: compact ? 2 : 3,
+        color: '#eadfce', stroke: '#171414', strokeThickness: 1, resolution: 2,
+        wordWrap: { width: descriptionWidth },
+      });
+      const descriptionSpace = Math.max(1, y + height - (height >= 65 ? (compact ? 35 : 60) : 12) - descY);
+      if (descriptionSpace < 8) description.setVisible(false);
+      if (compact && description.height > descriptionSpace) {
+        // Preserve a readable single line on small screens; the full description stays in the tooltip.
+        let excerpt = item.description ?? '';
+        description.setWordWrapWidth(0);
+        while (excerpt.length && description.width > descriptionWidth) {
+          excerpt = excerpt.slice(0, -1);
+          description.setText(`${excerpt.trimEnd()}…`);
+        }
+        if (description.height > descriptionSpace) description.setVisible(false);
+      } else if (description.height > descriptionSpace) description.setScale(descriptionSpace / description.height);
+      this.root.add(description);
+      if (height >= 65) {
+        const cooldown = `⏱ ${(item.cooldownMs / 1000).toFixed(1)}с`;
+        let stats: string;
+        if (item.effect === 'wind') stats = `⚙ ЗАВОД +${item.windAmount ?? 0}  ·  ${cooldown}`;
+        else if (item.effect === 'heal') stats = `✚ ЛЕЧЕНИЕ ${item.damage}  ·  ${cooldown}`;
+        else if (item.trigger === 'passive') {
+          const bonus = item.passiveBonuses;
+          const parts = [bonus?.armor ? `БРОНЯ +${bonus.armor}` : '', bonus?.damage ? `УРОН +${bonus.damage}` : '',
+            bonus?.healing ? `ЛЕЧЕНИЕ +${bonus.healing}` : '', bonus?.wind ? `ЗАВОД +${bonus.wind}` : '',
+            bonus?.cooldownFactor && bonus.cooldownFactor < 1 ? `КУЛДАУН −${Math.round((1 - bonus.cooldownFactor) * 100)}%` : ''].filter(Boolean);
+          stats = `◆ ${parts.join('  ·  ') || 'ПАССИВНОЕ СВОЙСТВО'}`;
+        } else {
+          const damageIcon = item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
+          const damageType = item.damageType === 'fire' ? 'ОГОНЬ' : item.damageType === 'arcane' ? 'МИСТИКА' : 'ФИЗ.';
+          stats = `${damageIcon} УРОН ${item.damage} ${damageType}  ·  ${cooldown}`;
+        }
+        const statLabel = this.text(stats, textX, y + height - (compact ? 33 : 54), compact ? 11 : 14, '#f2cf80', Math.max(48, compact ? descriptionWidth : ctaX - textX - 10));
+        statLabel.setFontFamily('Arial, sans-serif');
       }
       this.zones.push({ x, y, width: w, height, action: 'claim', value: item.id, itemId: item.id, reward: true });
+      this.button('Взять', ctaX, y + (height - ctaH) / 2, ctaW, ctaH, 'claim', item.id, true);
     });
   }
 
@@ -841,11 +1185,10 @@ export class PhaserHUD {
       this.text(`НА ПОЛУ · ${this.ui.state.floor.length}`, x, y, 11, '#f0cc86', w);
       y = this.drawLooseItems(this.ui.state.floor, x, y + 19, w) + 9;
     }
-    if (this.ui.state.stash.length) {
-      this.text(`В ЗАПАСЕ · ${this.ui.state.stash.length}`, x, y, 11, '#f0cc86', w);
-      this.drawLooseItems(this.ui.state.stash, x, y + 19, w);
-    }
-    this.button('Выбрать следующую комнату', x, this.right.y + this.right.height - 44, w, 34, 'route', '', true);
+    const dropY = this.right.y + this.right.height - 112;
+    this.panelTexture(x, dropY, w, 42); this.text('Перетащите вещь сюда, чтобы оставить на полу', x + w / 2, dropY + 13, 11, '#d7c4a8', w - 12, .5);
+    this.zones.push({ x, y: dropY, width: w, height: 42, action: 'floor-drop' });
+    this.button('Выбрать следующую комнату', x, this.right.y + this.right.height - 60, w, 50, 'route', '', true);
   }
 
   private drawLooseItems(items: CombatItem[], x: number, y: number, width: number): number {
@@ -863,28 +1206,22 @@ export class PhaserHUD {
   private ending(): void {
     const win = this.ui.run.stage === 'victory';
     const x = this.right.x + 12, y = this.field.y + 26, w = this.right.width - 24;
-    const title = win ? 'Архонт повержен' : 'Отряд пал';
+    const title = win ? 'Архонт повержен' : 'Завод остановлен';
+    this.panelTexture(x, y - 8, w, 86);
     this.titleText(title, x + w / 2, y, this.width < 820 ? 20 : 32, win ? '#f1ce86' : '#d3847a', w, .5);
-    this.text(win ? 'Забег завершён. Победа осталась за отрядом.' : 'Куклы разрушены. Их вещи остались на полу.', x, y + 43, this.width < 820 ? 9 : 13, '#e9d5b5', w);
-    let lootY = y + 82;
-    if (this.ui.state.floor.length) {
-      this.text(`НА ПОЛУ · ${this.ui.state.floor.length}`, x, lootY, 11, '#f0cc86', w);
-      lootY = this.drawLooseItems(this.ui.state.floor, x, lootY + 19, w) + 10;
-    }
-    if (this.ui.state.stash.length) {
-      this.text(`В ЗАПАСЕ · ${this.ui.state.stash.length}`, x, lootY, 11, '#f0cc86', w);
-      this.drawLooseItems(this.ui.state.stash, x, lootY + 19, w);
-    }
-    this.button('Начать новый забег', x, this.right.y + this.right.height - 52, w, 42, 'restart', '', true);
+    this.text(win ? 'Забег завершён. Победа осталась за отрядом.' : 'Все куклы разрушены.', x, y + 43, this.width < 820 ? 9 : 13, '#e9d5b5', w);
+    this.button('Начать новый забег', x, this.right.y + this.right.height - 76, w, 64, 'restart', '', true);
   }
 
   private drawDropFootprint(drag: DragPreview): void {
     if (!drag.heroId || drag.anchor === undefined) return;
     const cells = occupiedCells(drag.item, drag.anchor) ?? [];
-    const g = this.scene.add.graphics(); g.fillStyle(drag.valid ? 0x5fc49a : 0xef766c, .5); g.lineStyle(2, drag.valid ? 0x9df1c1 : 0xffa49b, 1);
+    const g = this.scene.add.graphics(); const color = drag.valid ? 0xf3ba63 : 0xef766c;
     cells.forEach(index => {
       const cell = this.cells.get(`${drag.heroId}:${index}`); if (!cell) return;
-      g.fillRect(cell.x, cell.y, cell.size, cell.size); g.strokeRect(cell.x + 1, cell.y + 1, cell.size - 2, cell.size - 2);
+      g.fillStyle(color, .18).fillRect(cell.x, cell.y, cell.size, cell.size);
+      g.fillStyle(color, .23).fillRect(cell.x + 2, cell.y + 2, cell.size - 4, cell.size - 4);
+      g.lineStyle(1, color, .9).strokeRect(cell.x + 1, cell.y + 1, cell.size - 2, cell.size - 2);
     }); this.root.add(g);
   }
 
@@ -902,7 +1239,7 @@ export class PhaserHUD {
     if (!speech || speech.expiresAt <= this.now) return;
     const hero = this.ui.state.heroes.find(candidate => candidate.id === speech.heroId);
     const item = hero?.items.find(candidate => candidate.id === speech.itemId);
-    if (!item) return;
+    if (!hero || !item) return;
     const cells = occupiedCells(item, item.cell ?? 0);
     const anchor = cells?.map(index => this.cells.get(`${hero!.id}:${index}`)).find(Boolean);
     if (!anchor) return;
@@ -913,62 +1250,91 @@ export class PhaserHUD {
     const w = Math.ceil(label.width + 18), h = Math.ceil(label.height + 12);
     const anchorX = anchor.x + anchor.size / 2, anchorY = anchor.y;
     const x = Math.max(5, Math.min(this.width - w - 5, anchorX - w / 2));
-    const y = Math.max(5, Math.min(this.height - h - 8, anchorY - h - 9));
-    const g = this.scene.add.graphics();
-    g.fillStyle(0x1a151c, .96).fillRoundedRect(x, y, w, h, 5);
-    g.lineStyle(1, 0xd5ad6c, 1).strokeRoundedRect(x, y, w, h, 5);
-    const tailX = Math.max(x + 9, Math.min(x + w - 9, anchorX));
-    g.fillStyle(0x1a151c, .96).fillTriangle(tailX - 4, y + h - 1, tailX + 4, y + h - 1, tailX, y + h + 6);
-    this.root.add(g);
+    const compact = this.width < 820;
+    const cardH = (this.left.height - 12 - 7 - (this.ui.selectedItem ? (compact ? 26 : 31) : 0)) / 2;
+    const cardW = (this.left.width - 12 - 7) / 2;
+    const boardSize = Math.max(1, Math.min(cardW - 4, cardH - 4));
+    const heroIndex = [...this.ui.state.heroes].sort((a, b) => a.slot - b.slot).findIndex(candidate => candidate.id === hero.id);
+    const cardY = this.left.y + 6 + Math.floor(Math.max(0, heroIndex) / 2) * (cardH + 7);
+    const boardY = cardY + (cardH - boardSize) / 2;
+    const trayTop = boardY + boardSize * .43, trayBottom = boardY + boardSize * .92;
+    const y = Math.max(trayTop, Math.min(trayBottom - h, anchorY + anchor.size + 5));
+    this.panelTexture(x, y, w, h);
     label.setPosition(x + 9, y + 6); this.root.add(label);
   }
 
-  private tooltip(item?: CombatItem): void {
-    if (!item) return;
-    const hero = this.ui.state.heroes.find(candidate => candidate.items.includes(item));
-    const text = `${item.name}\n${this.ui.itemDescription(item, hero)}`;
-    this.tooltipBox(text);
-  }
-
-  private actorTooltip(actor?: Combatant): void {
+  private actorTooltip(actor: Combatant, pointerX: number, pointerY: number): void {
     if (!actor) return;
+    if (actor.side === 'hero') {
+      this.tooltips.showText(`actor:${actor.id}:${actor.status}`, `${actor.name}\n${actorStatus[actor.status]}`, pointerX, pointerY, this.width, this.height);
+      return;
+    }
     const target = actor.side === 'enemy' && actor.status === 'enemy'
       ? chooseHeroTarget(this.ui.state.heroes, actor.targetPolicy, actor.slot, actor.reach)?.name
       : undefined;
+    const form = actor.isPuppet ? getPuppetForm(actor.puppetFormId) : undefined;
+    const pending = actor.status === 'rebirthing' ? getPuppetForm(actor.pendingPuppetFormId) : undefined;
     const details = actor.side === 'enemy'
-      ? `Враги охотятся сначала на людей, затем на кукол.${target ? ` Сейчас атакует: ${target}.` : ''}`
-      : `${actorStatus[actor.status]}${actor.status === 'stopped' ? '. Нажимайте, чтобы завести.' : '.'}`;
-    this.tooltipBox(`${actor.name}\n${details}`);
-  }
-
-  private tooltipBox(value: string): void {
-    const w = Math.min(this.width - 16, this.width < 820 ? Math.max(180, this.width * .6) : 330);
-    const label = this.text(value, 0, 0, this.width < 820 ? 9 : 11, '#f1e0c1', w - 14);
-    const availableHeight = Math.max(1, this.height - 26);
-    if (label.height > availableHeight) label.setScale(availableHeight / label.height);
-    const h = Math.ceil(label.displayHeight + 12);
-    const x = Math.min(this.width - w - 8, Math.max(8, this.scene.input.activePointer.x + 12));
-    const y = Math.min(this.height - h - 8, Math.max(8, this.scene.input.activePointer.y + 12));
-    const g = this.scene.add.graphics();
-    g.fillStyle(0x171414, .97).fillRoundedRect(x, y, w, h, 5);
-    g.lineStyle(1, 0xe0bd7a, 1).strokeRoundedRect(x, y, w, h, 5);
-    this.root.add(g);
-    label.setPosition(x + 7, y + 6);
-    this.root.bringToTop(label);
+      ? `Враги охотятся сначала на людей, затем на кукол.${target ? ` Сейчас атакует: ${target}.` : ''}${actor.isBoss ? ' В затянувшемся бою ярость усиливает атаки.' : ''}`
+      : form
+        ? `${actorStatus[actor.status]}. ${form.name} · ${puppetBranchLabels[form.branch]}\nПрочность ${form.maxDurability} · броня ${form.armor} · заряд ${form.maxWindUp} · расход ${form.windDrainPerSecond}/с · входящий урон ×${form.damageTakenMultiplier.toFixed(2)}.\n${form.passiveName}: ${form.passiveDescription}\n${form.cellModifiers.map(modifier => `${modifier.label} Цвет ячеек: ${modifier.tag === 'threaded' ? 'бирюзовый' : modifier.tag === 'mechanical' ? 'латунный' : modifier.tag === 'cursed' ? 'фиолетовый' : 'зелёный'}.`).join('\n')}${actor.status === 'stopped' ? '\nНажимайте, чтобы завести.' : ''}`
+        : `${actorStatus[actor.status]}${pending ? `. Предстоит перерождение: ${pending.name}.` : ''}${actor.status === 'stopped' ? '. Нажимайте, чтобы завести.' : '.'}`;
+    this.tooltips.showText(`actor:${actor.id}:${details}`, `${actor.name}\n${details}`, pointerX, pointerY, this.width, this.height);
   }
 
   private resetDialog(): void {
     const x = this.width * .26, y = this.height * .34, w = this.width * .48, h = this.height * .3;
-    const g = this.scene.add.graphics(); g.fillStyle(0x101012, .85).fillRect(0, 0, this.width, this.height);
-    g.fillStyle(0x302728, 1).fillRoundedRect(x, y, w, h, 8); g.lineStyle(2, 0xd5ac66, 1).strokeRoundedRect(x, y, w, h, 8); this.root.add(g);
+    this.modalBackdrop(); this.panelTexture(x, y, w, h);
     this.titleText('Начать заново?', x + w / 2, y + 20, this.width < 820 ? 20 : 30, '#f0d18f', w - 24, .5);
     this.text('Текущий забег будет сброшен.', x + w / 2, y + 58, this.width < 820 ? 10 : 14, '#e0ceb1', undefined, .5);
-    this.button('Сбросить', x + 12, y + h - 48, w / 2 - 18, 34, 'confirm-reset', '', true);
-    this.button('Вернуться', x + w / 2 + 6, y + h - 48, w / 2 - 18, 34, 'cancel-reset');
+    this.button('Сбросить', x + 12, y + h - 58, w / 2 - 18, 44, 'confirm-reset', '', true);
+    this.button('Вернуться', x + w / 2 + 6, y + h - 58, w / 2 - 18, 44, 'cancel-reset');
+  }
+
+  private helpDialog(): void {
+    const w = Math.min(this.width - 24, 570), h = Math.min(this.height - 24, 350);
+    const x = (this.width - w) / 2, y = (this.height - h) / 2;
+    this.modalBackdrop(); this.panelTexture(x, y, w, h);
+    this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'help' });
+    this.titleText('Как играть', x + w / 2, y + h * .20, 24, '#f1d49f', w * .8, .5);
+    const text = this.text('Вещи сражаются сами. Между боями перетаскивайте их в рюкзаки и поворачивайте правой кнопкой.\n\nПавший человек перерождается в куклу. Нажимайте на её карточку или спрайт, чтобы завести её: нужен действующий союзник.\n\nКуклы теряют прочность от ударов. Когда все окончательно погибнут, забег закончится. Оставленные на полу вещи пропадают при уходе.', x + w * .09, y + h * .28, 14, '#eadcc4', w * .82);
+    if (text.height > h * .51) text.setScale(h * .51 / text.height);
+    this.button('Понятно', x + 18, y + h - 56, w - 36, 44, 'help');
+  }
+
+  private modalBackdrop(): void {
+    this.root.add(this.scene.add.graphics().fillStyle(0x08070b, .84).fillRect(0, 0, this.width, this.height));
+  }
+
+  private panelTexture(x: number, y: number, w: number, h: number): void {
+    if (w <= 420 && h <= 240) {
+      const capX = Math.min(76, Math.max(18, Math.floor(w * .24)));
+      const capY = Math.min(40, Math.max(4, Math.floor(h * .23)));
+      this.root.add(this.scene.add.nineslice(x, y, 'ui-tooltip-frame-small', 'trimmed', w, h, capX, capX, capY, capY).setOrigin(0));
+      return;
+    }
+    this.root.add(this.scene.add.image(x, y, 'ui-modal').setOrigin(0).setDisplaySize(w, h));
+  }
+
+  private heroInfoDialog(): void {
+    const hero = this.ui.state.heroes.find(candidate => candidate.id === this.ui.heroInfoId);
+    if (!hero) return;
+    const w = Math.min(this.width - 20, 660), h = Math.min(this.height - 20, 540), x = (this.width - w) / 2, y = (this.height - h) / 2;
+    this.modalBackdrop(); this.panelTexture(x, y, w, h);
+    this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'close-hero-info' });
+    this.titleText(hero.name, x + w / 2, y + h * .18, 24, '#f1d49f', w * .8, .5);
+    const s = hero.attributes;
+    const mod = (value: number): string => { const n = attributeModifier(value); return n >= 0 ? `+${n}` : `${n}`; };
+    const form = hero.isPuppet ? getPuppetForm(hero.puppetFormId) : undefined;
+    const pending = hero.status === 'rebirthing' ? getPuppetForm(hero.pendingPuppetFormId) : undefined;
+    const text = `${actorStatus[hero.status]}${form ? ` · ${form.name}` : pending ? ` · станет ${pending.name}` : ''}\n\nСила ${s.strength} (${mod(s.strength)}) · урон оружия +${attributeModifier(s.strength) * 5}%\nЛовкость ${s.dexterity} (${mod(s.dexterity)}) · кулдауны −${attributeModifier(s.dexterity) * 2}%\nСтойкость ${s.constitution} (${mod(s.constitution)}) · броня +${attributeModifier(s.constitution)}\nРазум ${s.intellect} (${mod(s.intellect)}) · урон других вещей +${attributeModifier(s.intellect) * 5}%\nВоля ${s.wisdom} (${mod(s.wisdom)}) · лечение +${attributeModifier(s.wisdom) * 5}%\nДух ${s.presence} (${mod(s.presence)}) · подзавод вещами +${attributeModifier(s.presence) * 5}%${form ? `\n\n${puppetBranchLabels[form.branch]} · прочность ${hero.durability}/${hero.maxDurability} · завод ${Math.ceil(hero.windUpCharge)}/${hero.maxWindUp}\nБроня формы ${form.armor} · расход ${form.windDrainPerSecond}/с · входящий урон ×${form.damageTakenMultiplier.toFixed(2)}\n${form.passiveName}: ${form.passiveDescription}\n${form.cellModifiers.map(cell => cell.label).join(' ')}` : ''}`;
+    const body = this.text(text, x + w * .09, y + h * .24, this.width < 820 ? 13 : 15, '#eadcc4', w * .82);
+    if (body.height > h * .58) body.setScale(h * .58 / body.height);
+    this.button('Закрыть', x + w * .16, y + h * .83, w * .68, Math.min(48, h * .12), 'close-hero-info');
   }
 
   private card(x: number, y: number, width: number, height: number, label: string): void {
-    const g = this.scene.add.graphics(); g.fillStyle(0x372e2c, 1).fillRoundedRect(x, y, width, height, 4); g.lineStyle(1, 0x8b765b, 1).strokeRoundedRect(x, y, width, height, 4); this.root.add(g);
+    this.panelTexture(x, y, width, height);
     if (width > 70 && height > 55) this.frameCorners(x, y, width, height, Math.min(24, width * .15, height * .24), .78);
     if (width > 70 && height > 55) this.text(label, x + 7, y + 4, 11, '#f1d396', width - 14);
   }
@@ -1002,11 +1368,32 @@ export class PhaserHUD {
     this.root.add(image); return image;
   }
 
-  private actorImage(id: string, x: number, y: number, size: number, status?: Combatant['status']): void {
+  private puppetStateBadge(x: number, y: number, size: number, color: number): void {
+    const g = this.scene.add.graphics();
+    const left = x - size / 2, top = y - size / 2, corner = Math.max(2, size * .16);
+    g.fillStyle(0x1d171b, .98).fillRoundedRect(left, top, size, size, corner);
+    g.lineStyle(1, 0x544333, 1).strokeRoundedRect(left, top, size, size, corner);
+    g.lineStyle(1, color, .95).strokeRoundedRect(left + 1, top + 1, size - 2, size - 2, Math.max(1, corner - 1));
+    const inner = size * .25, outer = size * .37;
+    g.lineStyle(Math.max(1, size * .07), color, 1).strokeCircle(x, y, inner);
+    for (let tooth = 0; tooth < 8; tooth++) {
+      const angle = tooth * Math.PI / 4;
+      g.lineBetween(x + Math.cos(angle) * inner, y + Math.sin(angle) * inner,
+        x + Math.cos(angle) * outer, y + Math.sin(angle) * outer);
+    }
+    g.fillStyle(0x120f12, 1).fillCircle(x, y, size * .085);
+    this.root.add(g);
+  }
+
+  private actorImage(id: string, x: number, y: number, size: number, status?: Combatant['status'], dollTint = 0xffffff): Phaser.GameObjects.Image {
     const doll = status === 'active' || status === 'stopped';
-    const image = this.scene.add.image(x, y, doll ? 'doll-portraits' : 'portraits', portraitFrames[id] ?? 0).setDisplaySize(size, size);
+    const kind = status === 'dead' ? 'dead' : doll ? 'doll' : status === 'rebirthing' ? 'rebirth' : 'human';
+    const image = this.scene.add.image(x, y, `dashboard-portrait-${kind}-${portraitFrames[id] ?? 0}`).setDisplaySize(size, size);
     if (status === 'stopped') image.setTint(0xb8b8bc);
+    else if (doll) image.setTint(dollTint);
+    else if (status === 'dead') image.setTint(0xc1c0c3);
     this.root.add(image);
+    return image;
   }
 
   private itemById(id: string): CombatItem | undefined { return this.ui.allItems.find(item => item.id === id) ?? this.ui.run.offers.find(item => item.id === id); }

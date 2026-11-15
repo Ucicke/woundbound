@@ -34,7 +34,7 @@ Woundbound — готический автобаттлер с менеджмен
 ## Combat Actor Atlas Overlap
 
 - Check semantic content inside every actor frame, not only transparent outer borders: the generated hero-4 death pose spills into the rat row of the 6×8, 256px-frame atlas. Keep the first 111px of the rat row transparent in all six frames, leave the untouched source sheet intact, and run `node scripts/validate-pixel-assets.mjs --actors`; its rat-row spill guard catches regressions.
-- Whenever a spritesheet is generated, sliced, repacked, or edited, run `node scripts/validate-pixel-assets.mjs <option>` before using it in game. Choose `--actors` for combat actors or `--class-items` for the four runtime item atlases. If a sheet has no matching validator, add coverage before wiring or changing it. Also inspect every frame visually over a dark background at gameplay size to catch clipped silhouettes, neighboring-frame bleed, bad centering, and transparency artifacts that structural checks cannot detect.
+- Whenever a spritesheet is generated, sliced, repacked, or edited, run `node scripts/validate-pixel-assets.mjs <option>` before using it in game. Choose `--actors` for combat actors, `--class-items` for the four runtime item atlases, or `--puppet-deaths` for the final-death puppet atlas and its matching portrait cutouts. If a sheet has no matching validator, add coverage before wiring or changing it. Also inspect every frame visually over a dark background at gameplay size to catch clipped silhouettes, neighboring-frame bleed, bad centering, and transparency artifacts that structural checks cannot detect.
 
 ## Local Browser Preview on Windows
 

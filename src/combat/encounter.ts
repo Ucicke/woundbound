@@ -2,6 +2,7 @@ import { createActor, createState, type EncounterState } from './simulation.ts';
 import { createItem, ITEM_CLASS_GROUPS } from './items.ts';
 import { findPlacement } from './inventory.ts';
 import { COMBAT_CONFIG } from './config.ts';
+import { choosePuppetForm } from './puppets.ts';
 
 const starterLoadouts = [
   { classId: 'guard', core: ['blade', 'graveward-buckler'] },
@@ -46,7 +47,7 @@ function generateStarterInventory(state: EncounterState, random: () => number): 
     const remaining = selected.slice(1).map((definitionId, index) =>
       createItem(definitionId, `starter-${hero.id}-${index + 1}`, random));
     remaining.sort((a, b) => (b.shape?.length ?? 1) - (a.shape?.length ?? 1));
-    for (const item of remaining) if (!addPackedItem(state, hero, item, random)) state.stash.push(item);
+      for (const item of remaining) addPackedItem(state, hero, item, random);
   }
   state.item = state.heroes[0]?.items[0] ?? null;
 }
@@ -54,9 +55,10 @@ function generateStarterInventory(state: EncounterState, random: () => number): 
 export function createFullEncounter(options: { fullStartingInventory?: boolean; random?: () => number } = {}): EncounterState {
   const random = options.random ?? Math.random;
   const heroNames = ['Страж', 'Охотница', 'Паломник', 'Часовщица'];
-  const itemTypes = ['blade', 'dagger', 'desperate', 'lantern'];
+  const itemTypes = ['blade', 'hunter-bow', 'desperate', 'lantern'];
   const heroes = heroNames.map((name, slot) => {
     const hero = createActor(`hero-${slot + 1}`, name, 'hero', slot, COMBAT_CONFIG.humanHealth);
+    hero.pendingPuppetFormId = choosePuppetForm(hero.heroClass!, random).id;
     hero.items.push(createItem(itemTypes[slot]!, `item-${slot + 1}`, random));
     return hero;
   });
@@ -68,11 +70,18 @@ export function createFullEncounter(options: { fullStartingInventory?: boolean; 
     enemy.attackRemainingMs = enemy.attackCooldownMs;
     return enemy;
   });
-  const state = createState(heroes, enemies);
-  state.stash.push(
-    createItem('whetstone', 'whetstone-1', random), createItem('spring', 'spring-1', random),
-    createItem('mercy', 'mercy-1', random), createItem('heart', 'heart-1', random),
-  );
+  const state = createState(heroes, enemies, Math.floor(random() * 0x1_0000_0000));
+  const extraItems = [
+    ['whetstone', 'graveward-buckler'],
+    ['glass-eye', 'dagger'],
+    ['ashen-censer'],
+    ['spring', 'mercy'],
+  ];
+  heroes.forEach((hero, index) => extraItems[index]!.forEach((id, slot) => {
+    const item = createItem(id, `initial-${hero.id}-${slot}`, random);
+    const cell = findPlacement(state, item, hero.id);
+    if (cell !== null) { item.cell = cell; hero.items.push(item); }
+  }));
   if (options.fullStartingInventory) generateStarterInventory(state, random);
   return state;
 }

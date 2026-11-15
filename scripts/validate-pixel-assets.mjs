@@ -59,6 +59,14 @@ function assertTransparentRegion(path, imageWidth, imageHeight, left, top, right
   console.log(`PASS ${path}: ${label} is transparent`);
 }
 
+function validateStandaloneSprite(path) {
+  if (!existsSync(path)) throw new Error(`Missing asset: ${path}`);
+  const dimensions = run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,pix_fmt', '-of', 'csv=s=,:p=0', path]);
+  const [width, height, format] = dimensions.split(',');
+  if (format !== 'rgba') throw new Error(`${path}: expected RGBA, got ${format}`);
+  validate(path, +width, +height, 1, 1);
+}
+
 if (process.argv.includes('--actors')) {
   const rawDimensions = run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,pix_fmt', '-of', 'csv=s=,:p=0', files.actorRaw]);
   if (rawDimensions !== '1086,1448,rgba') throw new Error(`${files.actorRaw}: expected preserved 1086x1448 RGBA source, got ${rawDimensions}`);
@@ -72,7 +80,32 @@ if (process.argv.includes('--actors')) {
     console.log(`PASS ${atlas.raw} preserved RGBA source (1254x1254)`);
     if (atlas.grid) validate(atlas.grid, 2048, 2048, 4, 4);
   }
+} else if (process.argv.includes('--class-ornaments')) {
+  validate('public/assets/ui-class-ornaments.png', 1280, 1280, 2, 2);
+} else if (process.argv.includes('--resource-modules')) {
+  const single = 'public/assets/ui/clockmaker-tube-single.png';
+  const double = 'public/assets/ui/clockmaker-tube-double.png';
+  validate(single, 1840, 391, 1, 1);
+  validate(double, 1888, 412, 1, 1);
+  assertTransparentRegion(single, 1840, 391, 600, 150, 800, 230, 'single tube interior');
+  assertTransparentRegion(double, 1888, 412, 600, 120, 800, 200, 'double upper interior');
+  assertTransparentRegion(double, 1888, 412, 600, 325, 800, 340, 'double lower interior');
+} else if (process.argv.includes('--class-frames')) {
+  const path = 'public/assets/ui-class-frames.png';
+  validate(path, 1280, 1280, 2, 2);
+  for (let row = 0; row < 2; row++) for (let col = 0; col < 2; col++) {
+    assertTransparentRegion(path, 1280, 1280, col * 640 + 250, row * 640 + 250, col * 640 + 390, row * 640 + 390, `frame ${row * 2 + col} center`);
+  }
+} else if (process.argv.includes('--puppet-deaths')) {
+  const raw = 'public/assets/source/raw/puppet-deaths-atlas-imagegen.png';
+  const rawDimensions = run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,pix_fmt', '-of', 'csv=s=,:p=0', raw]);
+  if (rawDimensions !== '1261,1247,rgba') throw new Error(`${raw}: expected untouched 1261x1247 RGBA source, got ${rawDimensions}`);
+  console.log(`PASS ${raw} preserved RGBA source (1261x1247)`);
+  validate('public/assets/puppet-deaths-atlas.png', 1280, 1280, 2, 2);
+  for (const name of ['guard', 'huntress', 'pilgrim', 'clockmaker']) {
+    validateStandaloneSprite(`public/assets/ui/dead-portrait-${name}.png`);
+  }
 } else {
-  console.log('Usage: node scripts/validate-pixel-assets.mjs --actors|--class-items');
+  console.log('Usage: node scripts/validate-pixel-assets.mjs --actors|--class-items|--class-ornaments|--class-frames|--resource-modules|--puppet-deaths');
   process.exitCode = 2;
 }

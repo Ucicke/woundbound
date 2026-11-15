@@ -3,6 +3,8 @@ export const ITEM_ATLAS_FRAME_SIZE = 512;
 
 export const ACTOR_STATES_ATLAS_URL = '/assets/actors-woundbound-states-atlas.png';
 export const ACTOR_STATE_FRAME_SIZE = 256;
+export const PUPPET_DEATH_ATLAS_URL = '/assets/puppet-deaths-atlas.png';
+export const PUPPET_DEATH_FRAME_SIZE = 640;
 export const DOLL_STOPPED_ATLAS_URL = '/assets/doll-stopped-atlas.png';
 export const DOLL_STOPPED_FRAME_SIZE = 724;
 

@@ -1,25 +1,31 @@
 /// <reference types="vite/client" />
 import { createFullEncounter } from '../combat/encounter.ts';
 import { areAdjacent, canPlaceItem, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../combat/inventory.ts';
-import { applyEffect, HERO_ITEM_AFFINITIES, prepareEncounter, queueWinding, startBattle, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { applyEffect, attributeCooldownFactor, itemAttributeFactor, heroClassForActor, prepareEncounter, queueWinding, startBattle, transformHeroToPuppet, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { beginRun, calmWorkshopItem, claimReward, createRun, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop, type RunState } from '../combat/run.ts';
 import { ITEM_CATEGORY_LABELS, ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ItemDialogue } from '../presentation/itemDialogue.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
+import { getPuppetItemCellModifiers, getPuppetItemRules } from '../combat/puppets.ts';
 
 /** Game state and player commands. Phaser renders this model; this class has no DOM dependency. */
 export class GameUI {
   state: EncounterState;
   readonly run: RunState;
+  startingLoadout: 'starter' | 'full' = 'starter';
+  startLoadoutMenuOpen = false;
   selectedItem: string | null = null;
   message = '';
   confirmReset = false;
   paused = false;
+  helpOpen = false;
+  heroInfoId: string | null = null;
   latestAction?: CombatEvent;
   highlightUntil = 0;
   readonly dialogue = new ItemDialogue();
   private dialogueSequence = 0;
   private fastRun = false;
+  private modulePreview: 'active' | 'rebirth' | null = null;
 
   constructor() {
     this.state = this.freshEncounter();
@@ -28,7 +34,7 @@ export class GameUI {
   }
 
   private freshEncounter(): EncounterState {
-    const state = createFullEncounter({ fullStartingInventory: true });
+    const state = createFullEncounter({ fullStartingInventory: this.startingLoadout === 'full' });
     prepareEncounter(state);
     return state;
   }
@@ -39,13 +45,38 @@ export class GameUI {
     if (scenario === 'full-run') {
       this.fastRun = true;
       this.run.random = () => 0;
-      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.wind = 0;
+      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.windUpCharge = 0;
       this.prepareFastEncounter();
       return;
     }
     if (scenario === 'visual-winding') {
-      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.wind = 0;
+      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.windUpCharge = 0;
       this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
+      return;
+    }
+    if (scenario === 'visual-clockmaker') {
+      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
+      return;
+    }
+    if (scenario.startsWith('visual-module-')) {
+      const hero = this.state.heroes[3]!;
+      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 100000; });
+      if (scenario === 'visual-module-rebirth') {
+        hero.status = 'rebirthing'; hero.hp = 0; hero.rebirthMs = COMBAT_CONFIG.rebirthMs / 2;
+        this.modulePreview = 'rebirth';
+      } else if (scenario === 'visual-module-dead') {
+        hero.status = 'rebirthing'; hero.hp = 0;
+        transformHeroToPuppet(hero);
+        hero.status = 'active'; hero.durability = 1; hero.windUpCharge = hero.maxWindUp * .2;
+        applyEffect(this.state, hero.id, 'damage', 1);
+      } else if (scenario === 'visual-module-active' || scenario === 'visual-module-stopped') {
+        hero.status = 'rebirthing'; hero.hp = 0;
+        transformHeroToPuppet(hero);
+        if (scenario === 'visual-module-active') {
+          hero.status = 'active'; hero.windUpCharge = hero.maxWindUp * .68;
+          this.modulePreview = 'active';
+        }
+      }
       return;
     }
     if (scenario === 'empty-backpack') { hero.items.splice(0); return; }
@@ -68,7 +99,7 @@ export class GameUI {
         this.state.outcome = 'victory'; this.state.phase = 'result';
       }
     } else if (scenario === 'winding') {
-      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; }); hero.status = 'stopped'; hero.wind = 0;
+      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; }); hero.status = 'stopped'; hero.windUpCharge = 0;
     } else if (scenario === 'drop') {
       hero.status = 'stopped'; hero.durability = 1;
       applyEffect(this.state, hero.id, 'damage', 1);
@@ -94,6 +125,8 @@ export class GameUI {
   get allItems(): CombatItem[] { return [...this.state.stash, ...this.state.floor, ...this.state.heroes.flatMap(hero => hero.items)]; }
 
   tick(): void {
+    if (this.modulePreview === 'rebirth' && this.state.heroes[3]?.status === 'rebirthing') this.state.heroes[3]!.rebirthMs = COMBAT_CONFIG.rebirthMs / 2;
+    if (this.modulePreview === 'active' && this.state.heroes[3]?.status === 'active') this.state.heroes[3]!.windUpCharge = this.state.heroes[3]!.maxWindUp * .68;
     const now = performance.now();
     for (const event of this.state.events) {
       if (!event.sequence || event.sequence <= this.dialogueSequence) continue;
@@ -107,12 +140,14 @@ export class GameUI {
   }
 
   setPaused(paused: boolean): void { this.paused = paused; }
-  get dialogOpen(): boolean { return this.confirmReset; }
+  get dialogOpen(): boolean { return this.confirmReset || this.helpOpen || this.heroInfoId !== null; }
 
   itemDescription(item: CombatItem, hero?: Combatant): string {
-    const ownerAffinity = hero ? HERO_ITEM_AFFINITIES[hero.slot] : undefined;
+    const ownerAffinity = hero ? heroClassForActor(hero) : undefined;
     const nativeFactor = item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
     const bonuses = hero ? itemBonuses(item, hero.items, ownerAffinity) : { damage: 0, cooldownFactor: 1, healing: 0, wind: 0, descriptions: [] };
+    const puppetRules = hero ? getPuppetItemRules(hero, item) : { outputMultiplier: 1, cooldownMultiplier: 1, chargeCost: 0, chargeRefund: 0, adjacentCooldownReductionMs: 0, oracleCharge: 0, durabilityRepair: 0 };
+    const puppetCells = hero ? getPuppetItemCellModifiers(hero, item).map(modifier => modifier.label) : [];
     const identity = item.classAffinity && item.category
       ? `Тема: ${ITEM_CLASS_LABELS[item.classAffinity]} · тип: ${ITEM_CATEGORY_LABELS[item.category].toLowerCase()}. Родное снаряжение усиливает эффект на ${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}%. `
       : '';
@@ -125,16 +160,18 @@ export class GameUI {
         ...(passive?.wind ? [`Подзавод: +${Math.round(passive.wind * nativeFactor)}`] : []),
         ...(passive?.cooldownFactor ? [`Кулдаун: −${Math.round((1 - passive.cooldownFactor) * 100)}%`] : []),
       ];
-      return `${identity}${item.description ?? 'Пассивное свойство.'} ${stats.join('; ')}.`;
+      return `${identity}${item.description ?? 'Пассивное свойство.'} ${stats.join('; ')}.${puppetCells.length ? ` Ячейки формы: ${puppetCells.join(' ')}` : ''}`;
     }
-    const cooldown = item.cooldownMs * bonuses.cooldownFactor / 1000;
+    const statFactor = hero ? itemAttributeFactor(hero, item) : 1;
+    const cooldownFactor = bonuses.cooldownFactor * puppetRules.cooldownMultiplier * (hero ? attributeCooldownFactor(hero) : 1);
+    const cooldown = item.cooldownMs * cooldownFactor / 1000;
     const amount = item.effect === 'wind'
-      ? `Подзавод: ${Math.round(((item.windAmount ?? item.damage) + bonuses.wind) * nativeFactor)}.`
+      ? `Подзавод: ${Math.round(((item.windAmount ?? item.damage) + bonuses.wind) * nativeFactor * puppetRules.outputMultiplier * statFactor)}.`
       : item.effect === 'heal'
-        ? `Лечение: ${Math.round((item.damage + bonuses.healing) * nativeFactor)}.`
-        : `Урон: ${Math.round((item.damage + bonuses.damage) * nativeFactor)}.`;
+        ? `Лечение: ${Math.round((item.damage + bonuses.healing) * nativeFactor * puppetRules.outputMultiplier * statFactor)}.`
+        : `Урон: ${Math.round((item.damage + bonuses.damage) * nativeFactor * puppetRules.outputMultiplier * statFactor)}.`;
     const reach = (!item.effect || item.effect === 'damage') && item.reach === 'near' ? ' Владелец сам приближается к переднему врагу.' : '';
-    return `${identity}${item.description ?? 'Автоматическое действие.'}${item.calmed ? ' Предмет успокоен.' : ''} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${bonuses.cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}`;
+    return `${identity}${item.description ?? 'Автоматическое действие.'}${item.calmed ? ' Предмет успокоен.' : ''} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}${puppetCells.length ? ` Ячейки формы: ${puppetCells.join(' ')}` : ''}`;
   }
 
   selectItem(itemId: string): void {
@@ -167,7 +204,7 @@ export class GameUI {
   dropToStash(itemId: string): boolean {
     if (!storeItem(this.state, itemId)) return false;
     if (this.selectedItem === itemId) this.selectedItem = null;
-    this.message = 'Предмет убран в запас'; return true;
+    this.message = 'Предмет оставлен на полу'; return true;
   }
 
   rotateItem(itemId: string): boolean {
@@ -188,8 +225,19 @@ export class GameUI {
     if (name === 'item') this.selectItem(value);
     else if (name === 'cell') { const [heroId, raw] = value.split(':'); this.clickCell(heroId ?? '', Number(raw)); }
     else if (name === 'rotate' && this.selectedItem) this.rotateItem(this.selectedItem);
+    else if (name === 'toggle-start-loadout' && this.run.stage === 'opening') this.startLoadoutMenuOpen = !this.startLoadoutMenuOpen;
+    else if (name === 'set-start-loadout' && this.run.stage === 'opening') {
+      const loadout = value === 'starter' ? 'starter' : 'full';
+      if (loadout !== this.startingLoadout) {
+        this.startingLoadout = loadout;
+        this.state = this.freshEncounter();
+        Object.assign(this.run, createRun(this.state));
+        this.selectedItem = null; this.message = ''; this.latestAction = undefined; this.highlightUntil = 0;
+      }
+      this.startLoadoutMenuOpen = false;
+    }
     else if (name === 'begin-run') {
-      if (beginRun(this.run) && startBattle(this.state)) { this.selectedItem = null; this.message = ''; }
+      if (beginRun(this.run) && startBattle(this.state)) { this.selectedItem = null; this.message = ''; this.startLoadoutMenuOpen = false; }
     }
     else if (name === 'route') { if (openRoute(this.run)) { this.selectedItem = null; this.message = ''; } }
     else if (name === 'room') {
@@ -197,19 +245,27 @@ export class GameUI {
         this.selectedItem = null; this.message = '';
         if (this.run.stage === 'battle') { this.prepareFastEncounter(); startBattle(this.state); }
       }
-    } else if (name === 'claim') { if (claimReward(this.run, value)) this.message = 'Предмет добавлен в запас'; }
+    } else if (name === 'claim') { if (claimReward(this.run, value)) this.message = 'Предмет лежит на полу'; }
     else if (name === 'workshop-wind') { if (windWorkshop(this.run)) this.message = 'Завод восстановлен; прочность не изменилась'; }
     else if (name === 'calm') { if (calmWorkshopItem(this.run, value)) this.message = 'Предмет успокоен'; }
     else if (name === 'leave-workshop') { if (leaveWorkshop(this.run)) this.message = 'Работа мастерской завершена'; }
     else if (name === 'event-choice') { if (resolveInfirmary(this.run, value)) this.message = value === 'heal' ? 'Люди получили лечение' : 'Куклы починены'; }
     else if (name === 'store') this.dropToStash(value);
     else if (name === 'wind') queueWinding(this.state, value);
+    else if (name === 'help') this.helpOpen = !this.helpOpen;
+    else if (name === 'hero-info') this.heroInfoId = value;
+    else if (name === 'close-hero-info') this.heroInfoId = null;
+    else if (name === 'restart' && (this.run.stage === 'defeat' || this.run.stage === 'victory')) {
+      this.action('confirm-reset'); this.action('begin-run');
+    }
     else if (name === 'restart') this.confirmReset = true;
     else if (name === 'cancel-reset') this.confirmReset = false;
     else if (name === 'confirm-reset') {
       this.state = this.freshEncounter();
       Object.assign(this.run, createRun(this.state));
       this.prepareFastEncounter(); this.selectedItem = null; this.confirmReset = false;
+      this.startLoadoutMenuOpen = false;
+      this.heroInfoId = null; this.helpOpen = false;
       this.message = ''; this.latestAction = undefined; this.highlightUntil = 0; this.paused = false;
       this.dialogue.reset(); this.dialogueSequence = 0;
     }

@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { advanceClock, stepEncounter, type CombatClock, type CombatItem } from '../combat/simulation.ts';
 import { INVENTORY_GRID_SIZE, canPlaceItem, rotatedShape } from '../combat/inventory.ts';
-import { ACTOR_STATE_FRAME_SIZE, ACTOR_STATES_ATLAS_URL, CLASS_ITEM_ATLAS_TEXTURES, CLASS_ITEM_ATLAS_URLS, DOLL_STOPPED_ATLAS_URL, DOLL_STOPPED_FRAME_SIZE, ITEM_ATLAS_FRAME_SIZE } from '../presentation/ArtCatalog.ts';
+import { ACTOR_STATE_FRAME_SIZE, ACTOR_STATES_ATLAS_URL, CLASS_ITEM_ATLAS_TEXTURES, CLASS_ITEM_ATLAS_URLS, DOLL_STOPPED_ATLAS_URL, DOLL_STOPPED_FRAME_SIZE, ITEM_ATLAS_FRAME_SIZE, PUPPET_DEATH_ATLAS_URL, PUPPET_DEATH_FRAME_SIZE } from '../presentation/ArtCatalog.ts';
 import { GameUI } from '../ui/GameUI.ts';
 import { PhaserHUD, type DragPreview } from '../ui/PhaserHUD.ts';
 
@@ -21,7 +21,9 @@ export class CombatScene extends Phaser.Scene {
   private drag?: CanvasDrag;
   private pointerX = 0;
   private pointerY = 0;
+  private hoverTarget = '';
   private encounterState?: GameUI['state'];
+  private lastStage?: GameUI['run']['stage'];
   private preventCanvasContextMenu = (event: MouseEvent): void => { event.preventDefault(); };
   private onBlur = (): void => { this.focused = false; this.clock.accumulator = 0; this.clock.interrupted = true; };
   private onFocus = (): void => { this.focused = true; this.clock.accumulator = 0; this.clock.interrupted = true; };
@@ -35,6 +37,19 @@ export class CombatScene extends Phaser.Scene {
       this.load.spritesheet(CLASS_ITEM_ATLAS_TEXTURES[classId], asset(CLASS_ITEM_ATLAS_URLS[classId]), { frameWidth: ITEM_ATLAS_FRAME_SIZE, frameHeight: ITEM_ATLAS_FRAME_SIZE });
     }
     this.load.spritesheet('portraits', asset('/assets/source/raw/party-portraits-woundbound-imagegen.png'), { frameWidth: 543, frameHeight: 543 });
+    const dashboardAssets = {
+      guard: 'dashboard-guard-gothic-pixel.png', huntress: 'dashboard-huntress-gothic-pixel.png',
+      pilgrim: 'dashboard-pilgrim-gothic-pixel.png', clockmaker: 'dashboard-clockmaker-modular.png',
+    } as const;
+    for (const [classId, file] of Object.entries(dashboardAssets)) this.load.image(`ui-dashboard-${classId}`, asset(`/assets/ui/${file}`));
+    this.load.image('ui-tube-single', asset('/assets/ui/clockmaker-tube-single.png'));
+    this.load.image('ui-tube-double', asset('/assets/ui/clockmaker-tube-double.png'));
+    this.load.image('ui-button-plate', asset('/assets/ui/gothic-button-plate.png'));
+    this.load.image('ui-tooltip-frame', asset('/assets/ui/gothic-tooltip-frame.png'));
+    this.load.spritesheet('puppet-deaths', asset(PUPPET_DEATH_ATLAS_URL), { frameWidth: PUPPET_DEATH_FRAME_SIZE, frameHeight: PUPPET_DEATH_FRAME_SIZE });
+    for (const classId of ['guard', 'huntress', 'pilgrim', 'clockmaker']) {
+      this.load.image(`dead-portrait-${classId}`, asset(`/assets/ui/dead-portrait-${classId}.png`));
+    }
     this.load.spritesheet('doll-portraits', asset('/assets/source/raw/party-doll-portraits-woundbound-imagegen.png'), { frameWidth: 543, frameHeight: 543 });
     this.load.spritesheet('actor-states', asset(ACTOR_STATES_ATLAS_URL), { frameWidth: ACTOR_STATE_FRAME_SIZE, frameHeight: ACTOR_STATE_FRAME_SIZE });
     this.load.spritesheet('doll-stopped', asset(DOLL_STOPPED_ATLAS_URL), { frameWidth: DOLL_STOPPED_FRAME_SIZE, frameHeight: DOLL_STOPPED_FRAME_SIZE });
@@ -48,10 +63,29 @@ export class CombatScene extends Phaser.Scene {
     this.load.image('ui-descent-button', asset('/assets/ui/descent-button.png'));
     this.load.image('ui-opening-desktop', asset('/assets/ui/opening-desktop.png'));
     this.load.image('ui-opening-portrait', asset('/assets/ui/opening-portrait.png'));
+    this.load.image('ui-woundbound-logo', asset('/assets/ui/woundbound-logo.png'));
+    this.load.image('ui-background-pattern', asset('/assets/ui/background-pattern.png'));
+    this.load.image('ui-modal', asset('/assets/ui/gothic-modal-transparent.png'));
+    this.load.audio('background-music', asset('/assets/audio/crimson-rose-loop.ogg'));
   }
 
   create(): void {
     this.game.canvas.addEventListener('contextmenu', this.preventCanvasContextMenu);
+    this.createDashboardPortraits();
+    this.createResourceModuleFrames();
+    this.createButtonPlateFrames();
+    this.createCompactTooltipFrame();
+    this.enableGothicLighting();
+    const pattern = this.textures.get('ui-background-pattern').getSourceImage() as HTMLImageElement;
+    const tile = this.textures.createCanvas('ui-background-tile', pattern.width * 2, pattern.height * 2);
+    if (tile) {
+      const ctx = tile.context;
+      ctx.drawImage(pattern, 0, 0);
+      ctx.save(); ctx.translate(pattern.width * 2, 0); ctx.scale(-1, 1); ctx.drawImage(pattern, 0, 0); ctx.restore();
+      ctx.save(); ctx.translate(0, pattern.height * 2); ctx.scale(1, -1); ctx.drawImage(pattern, 0, 0); ctx.restore();
+      ctx.save(); ctx.translate(pattern.width * 2, pattern.height * 2); ctx.scale(-1, -1); ctx.drawImage(pattern, 0, 0); ctx.restore();
+      tile.refresh();
+    }
     this.focused = document.hasFocus();
     this.ui = new GameUI();
     this.encounterState = this.ui.state;
@@ -66,10 +100,109 @@ export class CombatScene extends Phaser.Scene {
     window.addEventListener('focus', this.onFocus);
     document.addEventListener('visibilitychange', this.onVisibility);
     this.events.once('shutdown', () => {
+      this.sound.get('background-music')?.destroy();
       this.game.canvas.removeEventListener('contextmenu', this.preventCanvasContextMenu);
       window.removeEventListener('blur', this.onBlur); window.removeEventListener('focus', this.onFocus);
       document.removeEventListener('visibilitychange', this.onVisibility);
     });
+  }
+
+  private createResourceModuleFrames(): void {
+    for (const [key, width, height] of [['ui-tube-single', 1840, 391], ['ui-tube-double', 1888, 412]] as const) {
+      const texture = this.textures.get(key);
+      if (texture.has('left-cap')) continue;
+      texture.add('left-cap', 0, 0, 0, 300, height);
+      texture.add('glass-middle', 0, 300, 0, width - 600, height);
+      texture.add('right-cap', 0, width - 300, 0, 300, height);
+    }
+  }
+
+  private createButtonPlateFrames(): void {
+    const texture = this.textures.get('ui-button-plate');
+    if (texture.has('left-cap')) return;
+    const width = 2172, height = 404, top = 160, cap = 300;
+    texture.add('left-cap', 0, 0, top, cap, height);
+    texture.add('center', 0, cap, top, width - cap * 2, height);
+    texture.add('right-cap', 0, width - cap, top, cap, height);
+  }
+
+  private createCompactTooltipFrame(): void {
+    if (this.textures.exists('ui-tooltip-frame-small')) return;
+    const source = this.textures.get('ui-tooltip-frame').getSourceImage() as HTMLImageElement | HTMLCanvasElement;
+    const width = Math.round(source.width / 4), height = Math.round(source.height / 4);
+    const texture = this.textures.createCanvas('ui-tooltip-frame-small', width, height);
+    if (!texture) return;
+    texture.context.imageSmoothingEnabled = true;
+    texture.context.drawImage(source, 0, 0, width, height);
+    const pixels = texture.context.getImageData(0, 0, width, height).data;
+    let left = width, top = height, right = 0, bottom = 0;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      if (pixels[(y * width + x) * 4 + 3]! < 8) continue;
+      left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y);
+    }
+    texture.refresh();
+    if (right >= left && bottom >= top) texture.add('trimmed', 0, left, top, right - left + 1, bottom - top + 1);
+  }
+
+  private enableGothicLighting(): void {
+    if (this.game.renderer.type !== Phaser.WEBGL) return;
+    this.cameras.main.filters.external.addVignette(.5, .52, .96, .1, 0x090711);
+  }
+
+  private createDashboardPortraits(): void {
+    const size = 543;
+    const arch = [[.116, .322], [.116, .17], [.13, .14], [.16, .12], [.20, .098], [.24, .12], [.28, .14], [.293, .17], [.293, .322]] as const;
+    const createPortrait = (sourceKey: 'portraits' | 'doll-portraits', targetKey: string, index: number, muted = false): void => {
+      if (this.textures.exists(targetKey)) return;
+      const atlas = this.textures.get(sourceKey), frame = atlas.get(index);
+      const texture = this.textures.createCanvas(targetKey, size, size);
+      if (!texture) return;
+      const ctx = texture.context;
+      ctx.save(); ctx.beginPath();
+      arch.forEach(([x, y], i) => {
+        const px = (x - .0895) / .23 * size, py = (y - .097) / .23 * size;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.closePath(); ctx.clip();
+      ctx.drawImage(atlas.getSourceImage(index) as HTMLImageElement | HTMLCanvasElement, frame.cutX, frame.cutY, frame.cutWidth, frame.cutHeight, 0, 0, size, size);
+      ctx.restore();
+      if (muted) {
+        const pixels = ctx.getImageData(0, 0, size, size);
+        for (let i = 0; i < pixels.data.length; i += 4) {
+          const light = Math.round((pixels.data[i]! * .2126 + pixels.data[i + 1]! * .7152 + pixels.data[i + 2]! * .0722) * .72);
+          pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = light;
+        }
+        ctx.putImageData(pixels, 0, 0);
+      }
+      texture.refresh();
+    };
+    for (let index = 0; index < 4; index++) {
+      createPortrait('portraits', `dashboard-portrait-human-${index}`, index);
+      createPortrait('portraits', `dashboard-portrait-rebirth-${index}`, index, true);
+      createPortrait('doll-portraits', `dashboard-portrait-doll-${index}`, index);
+
+      const classId = (['guard', 'huntress', 'pilgrim', 'clockmaker'] as const)[index]!;
+      const deadKey = `dashboard-portrait-dead-${index}`;
+      if (!this.textures.exists(deadKey)) {
+        const source = this.textures.get(`dead-portrait-${classId}`).getSourceImage() as HTMLImageElement | HTMLCanvasElement;
+        const texture = this.textures.createCanvas(deadKey, size, size);
+        if (texture) {
+          const ctx = texture.context;
+          ctx.save(); ctx.beginPath();
+          arch.forEach(([x, y], i) => {
+            const px = (x - .0895) / .23 * size, py = (y - .097) / .23 * size;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          });
+          ctx.closePath(); ctx.clip();
+          const fit = Math.min(size / source.width, size / source.height) * .9;
+          const drawWidth = source.width * fit, drawHeight = source.height * fit;
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(source, (size - drawWidth) / 2, (size - drawHeight) / 2, drawWidth, drawHeight);
+          ctx.restore();
+          texture.refresh();
+        }
+      }
+    }
   }
 
   update(time: number, delta: number): void {
@@ -78,12 +211,15 @@ export class CombatScene extends Phaser.Scene {
       this.clock.accumulator = 0;
       this.drag = undefined; this.dragAnchor = undefined; this.dragValid = undefined;
       this.pointerX = -1; this.pointerY = -1;
+      this.hoverTarget = '';
       this.nextRender = 0;
     }
     const visible = !document.hidden;
     const steps = advanceClock(this.clock, delta, visible, this.focused && !this.ui.dialogOpen && !this.startingRun);
     for (let i = 0; i < steps; i++) stepEncounter(this.ui.state, 50);
     this.ui.tick(); this.ui.setPaused(!visible || !this.focused);
+    if (this.lastStage && this.lastStage !== this.ui.run.stage && this.lastStage !== 'opening' && !this.startingRun) this.cameras.main.flash(180, 36, 23, 25, false);
+    this.lastStage = this.ui.run.stage;
     if (time >= this.nextRender) {
       const preview = this.drag?.active ? this.dragPreview() : undefined;
       this.hud.draw(this.pointerX, this.pointerY, preview);
@@ -141,17 +277,22 @@ export class CombatScene extends Phaser.Scene {
           const valid = canPlaceItem(this.ui.state, drag.item, zone.heroId, anchor);
           if (valid) this.ui.dropItem(drag.item.id, zone.heroId, anchor, drag.reward);
           else this.restoreRotation(drag);
-        } else if (zone?.action === 'store' || zone?.stash) {
+        } else if (zone?.action === 'floor-drop') {
           this.ui.dropToStash(drag.item.id);
         } else if (zone?.action === 'claim' && drag.reward) {
           this.ui.action('claim', drag.item.id);
         } else this.restoreRotation(drag);
-      } else if (zone?.action && (!zone.itemId || zone.action === 'claim')) this.ui.action(zone.action, zone.value ?? '');
+      } else if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) this.ui.action(zone.action, zone.value ?? '');
       else if (!zone?.itemId && zone?.heroId && zone.cell !== undefined) this.ui.action('cell', `${zone.heroId}:${zone.cell}`);
       this.drag = undefined; this.forceDraw(); return;
     }
-    if (zone?.action && (!zone.itemId || zone.action === 'claim')) {
+    if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) {
       if (zone.action === 'begin-run') { this.beginDescent(); return; }
+      if (zone.action === 'fullscreen') { if (this.scale.isFullscreen) this.scale.stopFullscreen(); else this.scale.startFullscreen(); return; }
+      if (zone.action === 'wind' && !this.ui.state.heroes.some(hero => hero.status === 'human' || hero.status === 'active')) {
+        this.hud.showClickNotice(pointer.x, pointer.y, 'Некому заводить');
+        this.forceDraw(); return;
+      }
       this.ui.action(zone.action, zone.value ?? '');
     }
     else if (!zone?.itemId && zone?.heroId && zone.cell !== undefined) this.ui.action('cell', `${zone.heroId}:${zone.cell}`);
@@ -160,17 +301,22 @@ export class CombatScene extends Phaser.Scene {
 
   private pointerMove(pointer: Phaser.Input.Pointer): void {
     this.pointerX = pointer.x; this.pointerY = pointer.y;
-    const drag = this.drag; if (!drag || !pointer.isDown) return;
-    drag.x = pointer.x; drag.y = pointer.y;
-    if (!drag.active && Math.hypot(pointer.x - drag.startX, pointer.y - drag.startY) >= 6) drag.active = true;
-    if (drag.active) {
-      const zone = this.hud.zoneAt(pointer.x, pointer.y);
-      if (zone?.heroId && zone.cell !== undefined) {
-        const anchor = zone.cell - drag.grabY * INVENTORY_GRID_SIZE - drag.grabX;
-        const valid = canPlaceItem(this.ui.state, drag.item, zone.heroId, anchor);
-        drag.heroId = zone.heroId; this.dragAnchor = anchor; this.dragValid = valid;
-      } else { drag.heroId = undefined; this.dragAnchor = undefined; this.dragValid = undefined; }
+    const drag = this.drag;
+    if (drag && pointer.isDown) {
+      drag.x = pointer.x; drag.y = pointer.y;
+      if (!drag.active && Math.hypot(pointer.x - drag.startX, pointer.y - drag.startY) >= 6) drag.active = true;
+      if (drag.active) {
+        const zone = this.hud.zoneAt(pointer.x, pointer.y);
+        if (zone?.heroId && zone.cell !== undefined) {
+          const anchor = zone.cell - drag.grabY * INVENTORY_GRID_SIZE - drag.grabX;
+          const valid = canPlaceItem(this.ui.state, drag.item, zone.heroId, anchor);
+          drag.heroId = zone.heroId; this.dragAnchor = anchor; this.dragValid = valid;
+        } else { drag.heroId = undefined; this.dragAnchor = undefined; this.dragValid = undefined; }
+        return;
+      }
     }
+    const target = this.hud.updateHover(pointer.x, pointer.y);
+    if (target !== this.hoverTarget) { this.hoverTarget = target; this.forceDraw(); }
   }
 
   private dragAnchor?: number;
@@ -178,6 +324,7 @@ export class CombatScene extends Phaser.Scene {
 
   private beginDescent(): void {
     if (this.startingRun || this.ui.run.stage !== 'opening') return;
+    if (!this.sound.get('background-music')?.isPlaying) this.sound.play('background-music', { loop: true, volume: .32 });
     this.startingRun = true;
     this.drag = undefined;
     const camera = this.cameras.main;

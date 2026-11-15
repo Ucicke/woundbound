@@ -11,7 +11,7 @@ describe('autonomous item catalog', () => {
     expect(ids).toHaveLength(64);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.slice(8)).toEqual(EXPANSION_ITEM_IDS);
-    expect(new Set(starting.map(item => item.definitionId)).size).toBe(8);
+    expect(new Set(starting.map(item => item.definitionId)).size).toBe(11);
     expect(starting.every(item => item.description && item.cooldownMs > 0)).toBe(true);
     const one = createItem('blade', 'one');
     const two = createItem('blade', 'two');
@@ -40,7 +40,7 @@ describe('autonomous item catalog', () => {
     expect(evaluateItem(state, hero, lantern).reason).toBeUndefined();
   });
 
-  it('heals only injured humans and never dolls, with correct event values', () => {
+  it('repairs the most injured ally, including dolls, with correct event values', () => {
     const state = createFullEncounter();
     const healer = state.heroes[0];
     const potion = createItem('mercy', 'potion-test');
@@ -49,14 +49,14 @@ describe('autonomous item catalog', () => {
     state.heroes[1].hp = 2;
     state.heroes[2].status = 'stopped'; state.heroes[2].durability = 1;
     state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
-    expect(evaluateItem(state, healer, potion).target).toBe(state.heroes[1]);
+    expect(evaluateItem(state, healer, potion).target).toBe(state.heroes[2]);
     stepEncounter(state, 50);
-    expect(state.heroes[1].hp).toBe(state.heroes[1].maxHp);
-    expect(state.heroes[2].durability).toBe(1);
-    expect(state.events.find(event => event.sourceId === potion.id)?.amount).toBe(8);
+    expect(state.heroes[1].hp).toBe(2);
+    expect(state.heroes[2].durability).toBeGreaterThan(1);
+    expect(state.events.find(event => event.sourceId === potion.id)?.amount).toBe(state.heroes[2].durability - 1);
     const self = createItem('heart', 'heart-test');
     healer.hp = healer.maxHp;
-    expect(evaluateItem(state, healer, self).reason).toBe('Нет раненого человека');
+    expect(evaluateItem(state, healer, self).reason).toBe('Нет раненого союзника');
     healer.hp = 5;
     expect(evaluateItem(state, healer, self).target).toBe(healer);
   });
@@ -66,13 +66,13 @@ describe('autonomous item catalog', () => {
     state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
     state.heroes[0]!.items = [createItem('parasite-key', 'key-test', () => 0)];
     const doll = state.heroes[2]!;
-    doll.status = 'stopped'; doll.wind = 12;
+    doll.status = 'stopped'; doll.windUpCharge = 12;
     const other = state.heroes[3]!;
-    other.status = 'active'; other.wind = 50;
+    other.status = 'active'; other.windUpCharge = 50;
     state.heroes[0]!.items[0]!.remainingMs = 0;
     expect(evaluateItem(state, state.heroes[0]!, state.heroes[0]!.items[0]!).target).toBe(doll);
     stepEncounter(state, 50);
-    expect(doll.wind).toBe(32);
+    expect(doll.windUpCharge).toBe(32);
     expect(state.events.some(event => event.kind === 'item' && event.amount === 20 && event.targetId === doll.id)).toBe(true);
   });
 

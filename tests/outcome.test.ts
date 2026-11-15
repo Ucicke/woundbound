@@ -7,9 +7,9 @@ describe('encounter outcomes', () => {
     const state = createFullEncounter();
     const last = state.heroes[0];
     state.heroes.slice(1).forEach(hero => { hero.status = 'dead'; });
-    last.status = 'active'; last.durability = 5; last.wind = wind;
+    last.status = 'active'; last.durability = 5; last.windUpCharge = wind;
     const itemId = last.items[0].id;
-    applyEffect(state, last.id, 'damage', 5);
+    applyEffect(state, last.id, 'damage', 10);
     expect(last.status).toBe('dead');
     expect(state.outcome).toBe('defeat');
     expect(state.floor.filter(item => item.id === itemId)).toHaveLength(1);
@@ -28,14 +28,17 @@ describe('encounter outcomes', () => {
     expect(state.outcome).toBe('ongoing');
   });
 
-  it('defeats a party of stopped zero-wind dolls when nobody can turn a key', () => {
+  it('keeps fighting when all dolls are stopped, then loses when they are destroyed', () => {
     const state = createFullEncounter();
     state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
-    state.heroes.forEach(hero => { hero.status = 'stopped'; hero.wind = 0; hero.durability = 50; });
+    state.heroes.forEach(hero => { hero.status = 'stopped'; hero.windUpCharge = 0; hero.durability = 50; });
     queueWinding(state, state.heroes[0].id);
     stepEncounter(state, 50);
-    expect(state.outcome).toBe('defeat');
+    expect(state.outcome).toBe('ongoing');
     expect(state.events.some(event => event.kind === 'wind')).toBe(false);
+    state.enemies.forEach(enemy => { enemy.attackDamage = 1000; enemy.attackRemainingMs = 0; enemy.reach = 'far'; });
+    stepEncounter(state, 50);
+    expect(state.outcome).toBe('defeat');
   });
 
   it('declares victory on the last enemy and freezes subsequent actions and input', () => {

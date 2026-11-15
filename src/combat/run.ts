@@ -43,7 +43,7 @@ function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
 
 function setEnemies(encounter: EncounterState, enemies: Combatant[]): void {
   encounter.enemies = enemies; encounter.enemy = enemies[0]!;
-  encounter.outcome = 'ongoing'; encounter.phase = 'preparation'; encounter.commands.length = 0; encounter.elapsedMs = 0; encounter.bossEnraged = false;
+  encounter.outcome = 'ongoing'; encounter.phase = 'preparation'; encounter.commands.length = 0; encounter.elapsedMs = 0; encounter.bossEnraged = false; encounter.combatEnraged = false;
 }
 
 /** The opening encounter is room one; all party and inventory objects remain owned by the encounter. */
@@ -106,6 +106,8 @@ export function openRoute(run: RunState): boolean {
 export function enterRoom(run: RunState, choiceId: string): boolean {
   const choice = nextRoomChoices(run).find(candidate => candidate.id === choiceId);
   if (!choice) return false;
+  run.encounter.floor.length = 0;
+  run.encounter.stash.length = 0;
   run.room++; run.current = choice.kind; run.roomLabel = choice.label; run.rewardClaimed = false; run.workshopCalmed = false; run.offers = [];
   run.encounter.phase = 'preparation'; run.encounter.outcome = 'ongoing'; run.encounter.commands.length = 0;
   if (choice.kind === 'battle' || choice.kind === 'boss') {
@@ -122,14 +124,14 @@ export function claimReward(run: RunState, itemId: string): boolean {
   if ((run.stage !== 'cache' && run.stage !== 'reward') || run.rewardClaimed) return false;
   const item = run.offers.find(candidate => candidate.id === itemId);
   if (!item) return false;
-  run.encounter.stash.push(item); run.offers = []; run.rewardClaimed = true; run.stage = 'cleared';
+  run.encounter.floor.push(item); run.offers = []; run.rewardClaimed = true; run.stage = 'cleared';
   return true;
 }
 
 export function windWorkshop(run: RunState): boolean {
   if (run.stage !== 'workshop') return false;
   for (const hero of run.encounter.heroes) if (hero.status === 'active' || hero.status === 'stopped') {
-    hero.wind = hero.maxWind;
+    hero.windUpCharge = hero.maxWindUp;
     if (hero.durability > 0) hero.status = 'active';
   }
   return true;

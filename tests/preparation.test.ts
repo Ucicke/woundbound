@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
 import { placeStashItem, prepareEncounter, startBattle, stepEncounter } from '../src/combat/simulation.ts';
+import { createItem } from '../src/combat/items.ts';
+import { findPlacement } from '../src/combat/inventory.ts';
 
 describe('preparation and combat boundary', () => {
   it('places a real item and lets that item act only after combat starts', () => {
     const state = createFullEncounter();
+    state.stash.push(createItem('whetstone', 'preparation-stone'));
     prepareEncounter(state);
     const item = state.stash[0];
     const itemId = item.id;
@@ -12,7 +15,7 @@ describe('preparation and combat boundary', () => {
     const hero = state.heroes[0];
     stepEncounter(state, 5000);
     expect(state.events).toHaveLength(0);
-    expect(placeStashItem(state, itemId, hero.id, 6)).toBe(true);
+    expect(placeStashItem(state, itemId, hero.id, findPlacement(state, item, hero.id)!)).toBe(true);
     expect(state.stash.some(item => item.id === itemId)).toBe(false);
     expect(startBattle(state)).toBe(true);
     for (let n = 0; n < 40; n++) stepEncounter(state, 50);
@@ -21,6 +24,7 @@ describe('preparation and combat boundary', () => {
 
   it('rejects invalid placements and all preparation changes during combat', () => {
     const state = createFullEncounter();
+    state.stash.push(createItem('whetstone', 'preparation-stone'));
     prepareEncounter(state);
     const itemId = state.stash[0].id;
     const before = JSON.stringify(state);

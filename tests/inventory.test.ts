@@ -2,12 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
 import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../src/combat/inventory.ts';
 import { applyEffect, prepareEncounter, startBattle, stepEncounter, type CombatItem } from '../src/combat/simulation.ts';
+import { createItem } from '../src/combat/items.ts';
+import { COMBAT_CONFIG } from '../src/combat/config.ts';
+
+function encounterWithLooseItems() {
+  const state = createFullEncounter();
+  state.heroes.forEach(hero => { hero.items = hero.items.slice(0, 1); });
+  state.floor.push(createItem('whetstone', 'test-stone'), createItem('spring', 'test-spring'));
+  return state;
+}
 
 describe('inventory ownership and adjacency', () => {
   it('validates whole item shapes and keeps ownership unchanged after invalid moves', () => {
-    const state = createFullEncounter();
+    const state = encounterWithLooseItems();
     prepareEncounter(state);
-    const item = state.stash[0];
+    const item = state.floor[0];
     item.shape = [[0, 0], [1, 0]];
     expect(occupiedCells(item, INVENTORY_GRID_SIZE - 1)).toBeNull();
     const before = JSON.stringify(state);
@@ -19,7 +28,7 @@ describe('inventory ownership and adjacency', () => {
     expect(occupiedCells(item, 1)).toEqual([1, 2]);
     expect(moveItem(state, item.id, state.heroes[0].id, INVENTORY_GRID_SIZE)).toBe(true);
     expect(storeItem(state, item.id)).toBe(true);
-    expect(state.stash).toContain(item);
+    expect(state.floor).toContain(item);
     expect(state.heroes[0].items).not.toContain(item);
     startBattle(state);
     expect(storeItem(state, state.heroes[1].items[0].id)).toBe(false);
@@ -37,9 +46,9 @@ describe('inventory ownership and adjacency', () => {
   });
 
   it('rotates a selected item before placement and locks rotation during combat', () => {
-    const state = createFullEncounter();
+    const state = encounterWithLooseItems();
     prepareEncounter(state);
-    const item = state.stash[0];
+    const item = state.floor[0];
     item.shape = [[0, 0], [1, 0], [0, 1]];
     expect(rotateItemInInventory(state, item.id)).toBe(true);
     expect(occupiedCells(item, 0)).toEqual([1, 7, 0]);
@@ -48,28 +57,28 @@ describe('inventory ownership and adjacency', () => {
   });
 
   it('derives both bonuses only from orthogonal neighbours and recomputes after moving', () => {
-    const state = createFullEncounter();
+    const state = encounterWithLooseItems();
     prepareEncounter(state);
     const blade = state.heroes[0].items.find(item => item.tags?.includes('blade'))!;
-    const stone = state.stash.find(item => item.tags?.includes('whetstone'))!;
-    const spring = state.stash.find(item => item.tags?.includes('spring'))!;
+    const stone = state.floor.find(item => item.tags?.includes('whetstone'))!;
+    const spring = state.floor.find(item => item.tags?.includes('spring'))!;
     const hero = state.heroes[0];
     expect(moveItem(state, stone.id, hero.id, INVENTORY_GRID_SIZE)).toBe(true);
-    expect(itemBonuses(blade, hero.items).damage).toBe(2);
+    expect(itemBonuses(blade, hero.items).damage).toBe(8);
     expect(moveItem(state, stone.id, hero.id, INVENTORY_GRID_SIZE * 2)).toBe(true);
     expect(itemBonuses(blade, hero.items).damage).toBe(0);
     const clockwork = state.heroes[3].items[0];
     expect(moveItem(state, spring.id, state.heroes[3].id, 2)).toBe(true);
-    expect(itemBonuses(clockwork, state.heroes[3].items).cooldownFactor).toBeCloseTo(0.85);
+    expect(itemBonuses(clockwork, state.heroes[3].items).cooldownFactor).toBeCloseTo(0.62);
   });
 
   it('applies displayed adjacency bonuses to damage and cooldown in real combat', () => {
-    const state = createFullEncounter();
+    const state = encounterWithLooseItems();
     prepareEncounter(state);
     const hero = state.heroes[0];
     const blade = state.heroes[0].items.find(item => item.tags?.includes('blade'))!;
-    const stone = state.stash.find(item => item.tags?.includes('whetstone'))!;
-    const spring = state.stash.find(item => item.tags?.includes('spring'))!;
+    const stone = state.floor.find(item => item.tags?.includes('whetstone'))!;
+    const spring = state.floor.find(item => item.tags?.includes('spring'))!;
     const clockwork = state.heroes[3].items[0];
     moveItem(state, stone.id, hero.id, INVENTORY_GRID_SIZE);
     moveItem(state, spring.id, state.heroes[3].id, 2);
@@ -79,17 +88,18 @@ describe('inventory ownership and adjacency', () => {
     state.enemies.forEach(enemy => { enemy.attackDamage = 0; });
     startBattle(state);
     stepEncounter(state, 50);
-    expect(state.events.find(event => event.sourceId === blade.id)?.amount).toBe(blade.damage + 2);
-    expect(clockwork.remainingMs).toBeCloseTo(clockwork.cooldownMs * 0.85);
+    expect(state.events.find(event => event.sourceId === blade.id)?.amount).toBe(Math.round((blade.damage + 8) * COMBAT_CONFIG.classAffinityMultiplier * 1.15));
+    expect(clockwork.remainingMs).toBeCloseTo(clockwork.cooldownMs * 0.62 * 0.96);
   });
 
   it('drops duplicate-type instances once and allows transfer only after battle', () => {
     const state = createFullEncounter();
+    state.heroes.forEach(hero => { hero.items = hero.items.slice(0, 1); });
     const dead = state.heroes[0];
     const original = dead.items[0];
     const second = { ...original, id: 'second-instance', cell: 1 };
     dead.items.push(second);
-    dead.status = 'active'; dead.durability = 1; dead.wind = 10;
+    dead.status = 'active'; dead.durability = 1; dead.windUpCharge = 10;
     applyEffect(state, dead.id, 'damage', 1);
     expect(dead.items).toHaveLength(0);
     expect(state.floor.map(item => item.id)).toEqual([original.id, second.id]);
@@ -107,7 +117,7 @@ describe('inventory ownership and adjacency', () => {
     const state = createFullEncounter();
     const fallen = state.heroes[0];
     const item = fallen.items[0];
-    fallen.status = 'active'; fallen.durability = 1; fallen.wind = 10;
+    fallen.status = 'active'; fallen.durability = 1; fallen.windUpCharge = 10;
     applyEffect(state, fallen.id, 'damage', 1);
     state.heroes.slice(1).forEach(hero => { hero.status = 'dead'; });
     state.outcome = 'defeat'; state.phase = 'result';
@@ -120,7 +130,7 @@ describe('inventory ownership and adjacency', () => {
     expect(recipient.items).toContain(item);
     expect(recipient.status).toBe('dead');
     expect(storeItem(state, item.id)).toBe(true);
-    expect(state.stash).toContain(item);
+    expect(state.floor).toContain(item);
     expect(recipient.items).not.toContain(item);
   });
 });

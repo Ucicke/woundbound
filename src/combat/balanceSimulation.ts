@@ -1,16 +1,16 @@
 import { createFullEncounter } from './encounter.ts';
 import { COMBAT_CONFIG } from './config.ts';
 import { areAdjacent, canPlaceItem, itemBonuses, moveItem, storeItem } from './inventory.ts';
-import { createRun, beginRun, claimReward, enterRoom, nextRoomChoices, openRoute, syncRun } from './run.ts';
-import { HERO_ITEM_AFFINITIES, prepareEncounter, queueWinding, startBattle, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
+import { createRun, beginRun, calmWorkshopItem, claimReward, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop } from './run.ts';
+import { heroClassForActor, prepareEncounter, queueWinding, startBattle, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
 
 export type BalanceAgent = 'random' | 'synergy' | 'balanced';
 export type BalanceOutcome = 'victory' | 'defeat' | 'timeout';
 
 export interface BalanceRoomResult {
   room: number;
-  kind: 'battle' | 'boss';
-  outcome: 'victory' | 'defeat' | 'ongoing';
+  kind: 'battle' | 'boss' | 'cache' | 'workshop' | 'event';
+  outcome: 'victory' | 'defeat' | 'ongoing' | 'cleared';
   durationSeconds: number;
   enemyHealth: number;
   enemyDamage: number;
@@ -26,11 +26,14 @@ export interface BalanceRunResult {
   rooms: BalanceRoomResult[];
 }
 
-const FRAME_MS = 100;
-const MAX_BATTLE_MS = 240_000;
-const WIND_CLICK_INTERVAL_MS = 200;
-const HERO_CLASSES = HERO_ITEM_AFFINITIES;
+/** Balance runs must begin with the same small curated kit as a real new run. */
+export function createBalanceSimulationStart(random: () => number) {
+  return createFullEncounter({ fullStartingInventory: false, random });
+}
 
+const FRAME_MS = 100;
+const MAX_BATTLE_MS = 360_000;
+const WIND_CLICK_INTERVAL_MS = 200;
 interface PlacementOption {
   heroId: string;
   cell: number;
@@ -82,7 +85,8 @@ function loadoutPower(items: CombatItem[], affinity?: ItemClassAffinity): number
     if (item.effect === 'passive' || item.trigger === 'passive') continue;
     const bonus = itemBonuses(item, items, affinity);
     const cooldown = Math.max(300, item.cooldownMs * bonus.cooldownFactor);
-    const amount = item.effect === 'wind' ? (item.windAmount ?? item.damage) + bonus.wind : item.damage + bonus.damage;
+    const amount = item.effect === 'wind' ? (item.windAmount ?? item.damage) + bonus.wind
+      : item.effect === 'heal' ? item.damage + bonus.healing : item.damage + bonus.damage;
     score += amount * nativeFactor(item) * 1000 / cooldown * triggerWeight(item) * effectWeight(item);
   }
   return score;
@@ -96,12 +100,13 @@ function placementOptions(state: EncounterState, item: CombatItem): PlacementOpt
   const options: PlacementOption[] = [];
   const previousCell = item.cell;
   const previousRotation = item.rotation;
-  const partyPower = state.heroes.reduce((sum, hero) => sum + loadoutPower(hero.items, HERO_CLASSES[hero.slot]), 0);
+  const partyPower = state.heroes.reduce((sum, hero) => sum + loadoutPower(hero.items, heroClassForActor(hero)), 0);
   const partyMean = Math.max(1, partyPower / Math.max(1, state.heroes.filter(hero => hero.status !== 'dead').length));
 
   for (const hero of state.heroes) {
     if (hero.status === 'dead') continue;
-    const before = loadoutPower(hero.items, HERO_CLASSES[hero.slot]);
+    const affinity = heroClassForActor(hero);
+    const before = loadoutPower(hero.items, affinity);
     for (let rotation = 0; rotation < 4; rotation++) {
       if (rotation === 0) delete item.rotation;
       else item.rotation = rotation;
@@ -116,10 +121,10 @@ function placementOptions(state: EncounterState, item: CombatItem): PlacementOpt
           continue;
         }
         firstFit = false;
-        const gain = Math.max(0, loadoutPower(hero.items, HERO_CLASSES[hero.slot]) - before);
+        const gain = Math.max(0, loadoutPower(hero.items, affinity) - before);
         hero.items.pop();
-        const affinity = item.classAffinity === HERO_CLASSES[hero.slot] ? singleItemValue(item) * 0.25 : 0;
-        const synergyScore = gain + affinity;
+        const classBonus = item.classAffinity === affinity ? singleItemValue(item, affinity) * 0.25 : 0;
+        const synergyScore = gain + classBonus;
         const fairness = Math.max(0.72, Math.min(1.28, 1 + (partyMean - before) / partyMean * 0.35));
         options.push({ heroId: hero.id, cell, rotation, synergyScore, balancedScore: synergyScore * fairness });
       }
@@ -149,8 +154,8 @@ function shuffle<T>(items: T[], random: () => number): T[] {
 function rebuildGear(state: EncounterState, agent: BalanceAgent, random: () => number, randomizeStarterGear = false): void {
   if (agent !== 'synergy') {
     if (agent === 'random' && randomizeStarterGear) {
-      // Keep the generated class signature item; randomly redistribute the rest of each full starter pack.
-      for (const hero of state.heroes) for (const item of [...hero.items.slice(1)]) storeItem(state, item.id);
+      // Model the stated novice policy: every starter item can land on any hero before the first fight.
+      for (const hero of state.heroes) for (const item of [...hero.items]) storeItem(state, item.id);
     }
     const looseItems = shuffle([...state.stash, ...state.floor], random);
     for (const item of looseItems) {
@@ -165,7 +170,7 @@ function rebuildGear(state: EncounterState, agent: BalanceAgent, random: () => n
   for (const item of looseItems) {
     const options = placementOptions(state, item);
     if (!options.length) continue;
-    options.sort((a, b) => b.balancedScore - a.balancedScore);
+    options.sort((a, b) => b.synergyScore - a.synergyScore);
     place(state, item, options[0]!);
   }
 }
@@ -173,10 +178,11 @@ function rebuildGear(state: EncounterState, agent: BalanceAgent, random: () => n
 /** The middle policy favors useful items and weaker owners but does not optimize adjacency. */
 function placeBalanced(state: EncounterState, item: CombatItem, random: () => number): boolean {
   const allLiving = state.heroes.filter(hero => hero.status !== 'dead');
-  const matching = allLiving.filter(hero => item.classAffinity === HERO_CLASSES[hero.slot]);
-  const candidates = matching.length ? matching : allLiving;
+  const matching = allLiving.filter(hero => item.classAffinity === heroClassForActor(hero));
+  const candidates = matching.length && random() < 0.35 ? matching : allLiving;
   const ranked = shuffle([...candidates], random).sort((a, b) =>
-    loadoutPower(a.items, HERO_CLASSES[a.slot]) - loadoutPower(b.items, HERO_CLASSES[b.slot]));
+    loadoutPower(a.items, heroClassForActor(a)) - loadoutPower(b.items, heroClassForActor(b)));
+  if (ranked.length > 1 && random() < 0.35) [ranked[0], ranked[1]] = [ranked[1]!, ranked[0]!];
   const rotations = shuffle([0, 1, 2, 3], random);
   const cells = shuffle(Array.from({ length: 36 }, (_, cell) => cell), random);
   const tryPlace = (hero: EncounterState['heroes'][number]): boolean => {
@@ -194,11 +200,11 @@ function placeBalanced(state: EncounterState, item: CombatItem, random: () => nu
 
   // A middle-tier planner upgrades the weakest single item if a reward is clearly better.
   const upgradeOrder = shuffle([...candidates], random).sort((a, b) =>
-    loadoutPower(a.items, HERO_CLASSES[a.slot]) - loadoutPower(b.items, HERO_CLASSES[b.slot]));
+    loadoutPower(a.items, heroClassForActor(a)) - loadoutPower(b.items, heroClassForActor(b)));
   for (const hero of upgradeOrder) {
     const weakest = hero.items.reduce<CombatItem | undefined>((current, other) =>
-      !current || singleItemValue(other, HERO_CLASSES[hero.slot]) < singleItemValue(current, HERO_CLASSES[hero.slot]) ? other : current, undefined);
-    if (!weakest || singleItemValue(item, HERO_CLASSES[hero.slot]) < singleItemValue(weakest, HERO_CLASSES[hero.slot]) * 1.1) continue;
+      !current || singleItemValue(other, heroClassForActor(hero)) < singleItemValue(current, heroClassForActor(hero)) ? other : current, undefined);
+    if (!weakest || singleItemValue(item, heroClassForActor(hero)) < singleItemValue(weakest, heroClassForActor(hero)) * 1.1) continue;
     if (storeItem(state, weakest.id) && tryPlace(hero)) return true;
   }
   return false;
@@ -220,18 +226,66 @@ function placeRandomly(state: EncounterState, item: CombatItem, random: () => nu
 
 function chooseReward(state: EncounterState, offers: CombatItem[], agent: BalanceAgent, random: () => number): CombatItem {
   if (agent === 'random') return offers[Math.floor(random() * offers.length)]!;
-  if (agent === 'balanced') return [...offers].sort((a, b) => singleItemValue(b) - singleItemValue(a))[0]!;
+  if (agent === 'balanced') {
+    const ranked = [...offers].sort((a, b) => singleItemValue(b) - singleItemValue(a));
+    return ranked[random() < 0.25 || ranked.length < 2 ? 0 : 1]!;
+  }
   const ranked = offers.map(item => {
     const options = placementOptions(state, item);
-    const best = options.reduce((score, option) => Math.max(score, option.balancedScore), 0);
+    const best = options.reduce((score, option) => Math.max(score, option.synergyScore), 0);
     return { item, score: best + singleItemValue(item) * 0.01 };
   }).sort((a, b) => b.score - a.score);
   return ranked[0]!.item;
 }
 
+function teamNeedsWorkshop(state: EncounterState): boolean {
+  const dollsNeedWinding = state.heroes.some(hero => (hero.status === 'stopped' || hero.status === 'active') &&
+    hero.durability > 0 && hero.windUpCharge < hero.maxWindUp * 0.9);
+  const hasUncalmedLantern = state.heroes.some(hero => hero.items.some(item => item.definitionId === 'lantern' && !item.calmed));
+  return dollsNeedWinding || hasUncalmedLantern;
+}
+
+function infirmaryChoice(state: EncounterState): 'heal' | 'repair' {
+  const missingHumanHp = state.heroes.reduce((sum, hero) => sum + (hero.status === 'human' ? hero.maxHp - hero.hp : 0), 0);
+  const missingDollDurability = state.heroes.reduce((sum, hero) => sum +
+    ((hero.status === 'active' || hero.status === 'stopped') ? hero.maxDurability - hero.durability : 0), 0);
+  return missingDollDurability > missingHumanHp ? 'repair' : 'heal';
+}
+
+/** Choose between the actual route options instead of forcing every agent into an elite fight. */
+function chooseRoute(state: EncounterState, choices: ReturnType<typeof nextRoomChoices>, agent: BalanceAgent, random: () => number) {
+  if (choices.length === 1) return choices[0]!;
+
+  const cache = choices.find(choice => choice.kind === 'cache');
+  const workshop = choices.find(choice => choice.kind === 'workshop');
+  const event = choices.find(choice => choice.kind === 'event');
+  const battles = choices.filter(choice => choice.kind === 'battle').sort((a, b) => (a.variant ?? 0) - (b.variant ?? 0));
+
+  if (agent === 'random') {
+    // Stress the baseline on combat rooms, then let its item policy make the difference visible.
+    return battles[battles.length - 1] ?? choices[Math.floor(random() * choices.length)]!;
+  }
+
+  if (agent === 'synergy') {
+    const repairNeed = state.heroes.some(hero => (hero.status === 'active' || hero.status === 'stopped') && hero.durability < hero.maxDurability * 0.8);
+    const healingNeed = state.heroes.some(hero => hero.status === 'human' && hero.hp < hero.maxHp * 0.6);
+    if (event && (repairNeed || healingNeed)) return event;
+    if (cache) return cache;
+    if (workshop && teamNeedsWorkshop(state)) return workshop;
+    return battles[0] ?? choices[0]!;
+  }
+
+  // The middle policy values safe rooms, but sometimes accepts the risk of a fight for extra loot.
+  if (event && (state.heroes.some(hero => hero.status === 'active' || hero.status === 'stopped') || random() < 0.2) && random() < 0.15) return event;
+  if (cache && random() < 0.15) return cache;
+  if (workshop && teamNeedsWorkshop(state) && random() < 0.2) return workshop;
+  if (battles.length > 1 && random() < 0.7) return battles[battles.length - 1]!;
+  return battles[0] ?? choices[0]!;
+}
+
 function windMostUrgentDoll(state: EncounterState): void {
   const stopped = state.heroes.filter(hero => hero.status === 'stopped' && hero.durability > 0)
-    .sort((a, b) => a.wind / Math.max(1, a.maxWind) - b.wind / Math.max(1, b.maxWind) || a.slot - b.slot);
+    .sort((a, b) => a.windUpCharge / Math.max(1, a.maxWindUp) - b.windUpCharge / Math.max(1, b.maxWindUp) || a.slot - b.slot);
   if (stopped[0]) queueWinding(state, stopped[0].id);
 }
 
@@ -253,22 +307,49 @@ function simulateBattle(state: EncounterState): BattleResult {
 /** Plays the ten-room route with a repeatable loot policy and attentive manual winding. */
 export function simulateBalanceRun(agent: BalanceAgent, seed: number): BalanceRunResult {
   const random = seededRandom(seed);
-  const state = createFullEncounter({ fullStartingInventory: true, random });
+  const state = createBalanceSimulationStart(random);
   prepareEncounter(state);
+  if (agent === 'random') rebuildGear(state, agent, random, true);
   const run = createRun(state, random);
   const rooms: BalanceRoomResult[] = [];
   let roomsCleared = 0;
   let durationSeconds = 0;
-  rebuildGear(state, agent, random, agent === 'random');
   beginRun(run);
 
   for (let room = 1; room <= 10; room++) {
+    let roomKind: BalanceRoomResult['kind'] = 'battle';
     if (room > 1) {
       if (!openRoute(run)) break;
       const choices = nextRoomChoices(run);
-      const choice = room === 10 ? choices.find(candidate => candidate.kind === 'boss')
-        : choices.find(candidate => candidate.kind === 'battle' && candidate.variant === 2) ?? choices.find(candidate => candidate.kind === 'battle');
+      const choice = chooseRoute(state, choices, agent, random);
       if (!choice || !enterRoom(run, choice.id)) break;
+      roomKind = choice.kind;
+
+      if (choice.kind === 'cache') {
+        const reward = chooseReward(state, run.offers, agent, random);
+        if (!claimReward(run, reward.id)) return result('timeout');
+        rebuildGear(state, agent, random);
+        roomsCleared++;
+        rooms.push({ room, kind: 'cache', outcome: 'cleared', durationSeconds: 0, enemyHealth: 0, enemyDamage: 0 });
+        continue;
+      }
+
+      if (choice.kind === 'workshop') {
+        windWorkshop(run);
+        const lantern = state.heroes.flatMap(hero => hero.items).find(item => item.definitionId === 'lantern' && !item.calmed);
+        if (lantern && (agent !== 'random' || random() < 0.5)) calmWorkshopItem(run, lantern.id);
+        if (!leaveWorkshop(run)) return result('timeout');
+        roomsCleared++;
+        rooms.push({ room, kind: 'workshop', outcome: 'cleared', durationSeconds: 0, enemyHealth: 0, enemyDamage: 0 });
+        continue;
+      }
+
+      if (choice.kind === 'event') {
+        if (!resolveInfirmary(run, agent === 'random' ? (random() < 0.5 ? 'heal' : 'repair') : infirmaryChoice(state))) return result('timeout');
+        roomsCleared++;
+        rooms.push({ room, kind: 'event', outcome: 'cleared', durationSeconds: 0, enemyHealth: 0, enemyDamage: 0 });
+        continue;
+      }
     }
 
     const enemyHealth = state.enemies.reduce((sum, enemy) => sum + enemy.maxHp, 0);
@@ -276,7 +357,7 @@ export function simulateBalanceRun(agent: BalanceAgent, seed: number): BalanceRu
     const battle = simulateBattle(state);
     durationSeconds += battle.elapsedMs / 1000;
     syncRun(run);
-    rooms.push({ room, kind: run.current === 'boss' ? 'boss' : 'battle', outcome: battle.outcome === 'timeout' ? 'ongoing' : battle.outcome, durationSeconds: battle.elapsedMs / 1000, enemyHealth, enemyDamage });
+    rooms.push({ room, kind: run.current === 'boss' ? 'boss' : roomKind, outcome: battle.outcome === 'timeout' ? 'ongoing' : battle.outcome, durationSeconds: battle.elapsedMs / 1000, enemyHealth, enemyDamage });
 
     if (battle.outcome === 'timeout') return result('timeout');
     if (battle.outcome === 'defeat') return result('defeat');

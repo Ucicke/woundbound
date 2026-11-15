@@ -1,29 +1,71 @@
 import { COMBAT_CONFIG } from './config.ts';
-import { itemBonuses, moveItem } from './inventory.ts';
+import { areAdjacent, itemBonuses, moveItem } from './inventory.ts';
+import { defaultPuppetForm, getPuppetForm, getPuppetItemRules, getPuppetWindDrain, registerPuppetItemTrigger, type HeroClass, type PuppetBranch, type PuppetFormId, type PuppetPassiveState } from './puppets.ts';
 
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest' | 'rear';
 export type Reach = 'near' | 'far';
 export type CombatRole = 'guard' | 'archer' | 'rogue' | 'mage' | 'enemy';
 export type ItemRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
-export type ItemClassAffinity = 'guard' | 'huntress' | 'pilgrim' | 'clockmaker';
+export type ItemClassAffinity = HeroClass;
 export type ItemCategory = 'weapon' | 'protection' | 'jewelry' | 'relic' | 'tool' | 'consumable' | 'ammo';
 export const HERO_ITEM_AFFINITIES: readonly ItemClassAffinity[] = ['guard', 'huntress', 'pilgrim', 'clockmaker'];
 export interface ItemPassiveBonuses { armor?: number; damage?: number; cooldownFactor?: number; healing?: number; wind?: number }
-export interface CombatItem { id: string; definitionId?: string; name: string; description?: string; rarity?: ItemRarity; rarityMultiplier?: number; classAffinity?: ItemClassAffinity; category?: ItemCategory; passiveBonuses?: ItemPassiveBonuses; damage: number; windAmount?: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf' | 'targetBelowHalf' | 'allyBelowHalf' | 'passive'; cell?: number; rotation?: number; reach?: Reach; shape?: readonly (readonly [number, number])[]; tags?: string[]; effect?: 'damage' | 'heal' | 'wind' | 'passive'; healTarget?: 'self' | 'lowest'; calmed?: boolean }
+export interface HeroAttributes { strength: number; dexterity: number; constitution: number; intellect: number; wisdom: number; presence: number }
+const CLASS_ATTRIBUTES: Record<HeroClass, HeroAttributes> = {
+  guard: { strength: 16, dexterity: 10, constitution: 14, intellect: 10, wisdom: 10, presence: 10 },
+  huntress: { strength: 12, dexterity: 16, constitution: 10, intellect: 10, wisdom: 12, presence: 10 },
+  pilgrim: { strength: 10, dexterity: 10, constitution: 12, intellect: 10, wisdom: 16, presence: 14 },
+  clockmaker: { strength: 10, dexterity: 14, constitution: 10, intellect: 16, wisdom: 10, presence: 12 },
+};
+export const attributeModifier = (score: number): number => Math.floor((score - 10) / 2);
+export function itemAttributeFactor(hero: Combatant, item: CombatItem): number {
+  if (hero.side !== 'hero') return 1;
+  const stats = hero.attributes;
+  const score = item.effect === 'heal' ? stats.wisdom : item.effect === 'wind' ? stats.presence : item.category === 'weapon' || item.category === 'ammo' ? stats.strength : stats.intellect;
+  return 1 + attributeModifier(score) * .05;
+}
+export function attributeCooldownFactor(hero: Combatant): number { return 1 - attributeModifier(hero.attributes.dexterity) * .02; }
+export interface CombatItem { id: string; definitionId?: string; name: string; description?: string; rarity?: ItemRarity; rarityMultiplier?: number; classAffinity?: ItemClassAffinity; category?: ItemCategory; damageType?: 'physical' | 'fire' | 'arcane'; passiveBonuses?: ItemPassiveBonuses; damage: number; windAmount?: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf' | 'targetBelowHalf' | 'allyBelowHalf' | 'passive'; cell?: number; rotation?: number; reach?: Reach; shape?: readonly (readonly [number, number])[]; tags?: string[]; effect?: 'damage' | 'heal' | 'wind' | 'passive'; healTarget?: 'self' | 'lowest'; calmed?: boolean }
 export interface Combatant {
   id: string; name: string; side: 'hero' | 'enemy'; slot: number;
   hp: number; maxHp: number; status: ActorStatus; items: CombatItem[];
+  attributes: HeroAttributes;
   targetPolicy: TargetPolicy; attackDamage: number; attackCooldownMs: number; attackRemainingMs: number; reach?: Reach;
-  durability: number; maxDurability: number; wind: number; maxWind: number; rebirthMs: number; isBoss?: boolean; role: CombatRole;
+  durability: number; maxDurability: number; windUpCharge: number; maxWindUp: number; rebirthMs: number; isBoss?: boolean; role: CombatRole;
+  heroClass?: HeroClass; isPuppet: boolean; puppetBranch: PuppetBranch | null; puppetFormId: PuppetFormId | null;
+  pendingPuppetFormId: PuppetFormId | null; puppetPassiveState: PuppetPassiveState;
 }
-export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state' | 'wind'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string; defeatedTarget?: boolean; transition?: 'rebirth' | 'permadeath' }
-export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; bossEnraged: boolean }
+export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state' | 'wind'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string; defeatedTarget?: boolean; transition?: 'rebirth' | 'puppet' | 'permadeath' }
+export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; bossEnraged: boolean; combatEnraged: boolean; windRandomState: number }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
   const role: CombatRole = side === 'enemy' ? 'enemy' : id === 'hero-1' ? 'guard' : id === 'hero-2' ? 'archer' : id === 'hero-3' ? 'rogue' : 'mage';
-  return { id, name, side, slot, hp, maxHp: hp, status: side === 'hero' ? 'human' : 'enemy', items: [], targetPolicy: policy, attackDamage: side === 'enemy' ? 6 : 0, attackCooldownMs: 1800, attackRemainingMs: 1800, durability: 100, maxDurability: 100, wind: 0, maxWind: 100, rebirthMs: 0, role };
+  const heroClass = side === 'hero' ? HERO_ITEM_AFFINITIES[slot] ?? 'guard' : undefined;
+  return { id, name, side, slot, hp, maxHp: hp, status: side === 'hero' ? 'human' : 'enemy', items: [], targetPolicy: policy, attackDamage: side === 'enemy' ? 6 : 0, attackCooldownMs: 1800, attackRemainingMs: 1800, durability: 100, maxDurability: 100, windUpCharge: 0, maxWindUp: COMBAT_CONFIG.maxWind, rebirthMs: 0, role,
+    attributes: { ...(heroClass ? CLASS_ATTRIBUTES[heroClass] : { strength: 10, dexterity: 10, constitution: 10, intellect: 10, wisdom: 10, presence: 10 }) }, heroClass, isPuppet: false, puppetBranch: null, puppetFormId: null, pendingPuppetFormId: heroClass ? defaultPuppetForm(heroClass).id : null,
+    puppetPassiveState: { itemActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 } };
+}
+
+export function heroClassForActor(actor: Combatant): ItemClassAffinity | undefined {
+  return actor.side === 'hero' ? actor.heroClass ?? HERO_ITEM_AFFINITIES[actor.slot] : undefined;
+}
+
+export function transformHeroToPuppet(hero: Combatant, formId: PuppetFormId | null = hero.pendingPuppetFormId): boolean {
+  const form = getPuppetForm(formId);
+  if (!form || hero.side !== 'hero' || hero.status !== 'rebirthing') return false;
+  hero.heroClass = form.heroClass;
+  hero.isPuppet = true;
+  hero.puppetBranch = form.branch;
+  hero.puppetFormId = form.id;
+  hero.pendingPuppetFormId = null;
+  hero.maxDurability = hero.durability = form.maxDurability;
+  hero.maxWindUp = form.maxWindUp;
+  hero.windUpCharge = 0;
+  hero.puppetPassiveState = { itemActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 };
+  hero.status = 'stopped';
+  return true;
 }
 
 /** Presentation reads intent only: combat targeting and damage never depend on Canvas coordinates. */
@@ -33,8 +75,8 @@ export function projectRoleIntent(actor: Combatant, target?: Combatant): { lane:
   return { lane: actor.role === 'guard' ? 'front' : 'rear', hidden: false, targetId: target?.id };
 }
 
-export function createState(heroes: Combatant[], enemies: Combatant[]): EncounterState {
-  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [], elapsedMs: 0, bossEnraged: false };
+export function createState(heroes: Combatant[], enemies: Combatant[], windRandomSeed = Math.floor(Math.random() * 0x1_0000_0000)): EncounterState {
+  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [], elapsedMs: 0, bossEnraged: false, combatEnraged: false, windRandomState: windRandomSeed >>> 0 || 0x6d2b79f5 };
 }
 
 /** Prepare a fresh encounter without discarding item identities or cooldowns. */
@@ -100,15 +142,17 @@ export function evaluateItem(state: EncounterState, hero: Combatant, item: Comba
   if (item.trigger === 'ownerBelowHalf' && (hero.status === 'human' ? hero.hp / hero.maxHp : hero.durability / hero.maxDurability) >= 0.5) return { reason: 'Владелец должен быть ранен ниже половины' };
   let target: Combatant | undefined;
   if (item.effect === 'wind') {
-    target = state.heroes.filter(candidate => (candidate.status === 'active' || candidate.status === 'stopped') && candidate.wind < candidate.maxWind)
-      .sort((a, b) => a.wind / a.maxWind - b.wind / b.maxWind || a.slot - b.slot)[0];
+    target = state.heroes.filter(candidate => (candidate.status === 'active' || candidate.status === 'stopped') && candidate.windUpCharge < candidate.maxWindUp)
+      .sort((a, b) => a.windUpCharge / a.maxWindUp - b.windUpCharge / b.maxWindUp || a.slot - b.slot)[0];
     if (!target) return { reason: 'Нет куклы, которой нужен завод' };
   } else if (item.effect === 'heal') {
-    const injured = state.heroes.filter(candidate => candidate.status === 'human' && candidate.hp < candidate.maxHp && (item.trigger !== 'allyBelowHalf' || candidate.hp / candidate.maxHp < 0.5));
-    target = item.healTarget === 'self' ? injured.find(candidate => candidate.id === hero.id) : injured.sort((a, b) => a.hp - b.hp || a.slot - b.slot)[0];
-    if (!target) return { reason: item.trigger === 'allyBelowHalf' ? 'Нет человека с критическим ранением' : 'Нет раненого человека' };
+    const ratio = (candidate: Combatant): number => candidate.status === 'human' ? candidate.hp / candidate.maxHp : candidate.durability / candidate.maxDurability;
+    const injured = state.heroes.filter(candidate => (candidate.status === 'human' || candidate.status === 'active' || candidate.status === 'stopped') && ratio(candidate) < 1 && (item.trigger !== 'allyBelowHalf' || ratio(candidate) < 0.5));
+    target = item.healTarget === 'self' ? injured.find(candidate => candidate.id === hero.id) : injured.sort((a, b) => ratio(a) - ratio(b) || a.slot - b.slot)[0];
+    if (!target) return { reason: item.trigger === 'allyBelowHalf' ? 'Нет союзника с критическим повреждением' : 'Нет раненого союзника' };
   } else {
-    target = chooseEnemyTarget(state.enemies, item.targetPolicy, hero.slot, item.reach);
+    const targetPolicy = hero.isPuppet && getPuppetForm(hero.puppetFormId)?.passiveId === 'fate-streak' ? 'lowest' : item.targetPolicy;
+    target = chooseEnemyTarget(state.enemies, targetPolicy, hero.slot, item.reach);
     if (!target) return { reason: 'Нет доступной цели' };
     if (item.trigger === 'targetBelowHalf' && target.hp / target.maxHp >= 0.5) return { target, reason: 'Цель должна быть ранена ниже половины' };
   }
@@ -122,7 +166,7 @@ function record(state: EncounterState, event: CombatEvent): void {
 }
 
 export function partyCanContinue(state: EncounterState): boolean {
-  return state.heroes.some(hero => hero.status === 'human' || hero.status === 'active' || hero.status === 'rebirthing');
+  return state.heroes.some(hero => hero.status !== 'dead');
 }
 
 function resolveOutcome(state: EncounterState): void {
@@ -138,32 +182,56 @@ export function queueWinding(state: EncounterState, actorId: string): void {
   if (state.phase === 'combat' && state.outcome === 'ongoing' && doll?.status === 'stopped' && doll.durability > 0 && hasWinder) state.commands.push(actorId);
 }
 
+function rollManualWindAmount(state: EncounterState, doll: Combatant): number {
+  let random = state.windRandomState || 0x6d2b79f5;
+  random ^= random << 13;
+  random ^= random >>> 17;
+  random ^= random << 5;
+  state.windRandomState = random >>> 0;
+  const roll = 5 + state.windRandomState % 16;
+  return roll;
+}
+
 export function applyEffect(state: EncounterState, targetId: string, kind: 'damage' | 'heal' | 'poison' | 'bleeding' | 'fear' | 'wind', amount: number): boolean {
   const target = [...state.heroes, ...state.enemies].find(actor => actor.id === targetId);
   if (!target || target.status === 'dead' || target.status === 'rebirthing' || state.outcome !== 'ongoing') return false;
   const isDoll = target.status === 'stopped' || target.status === 'active';
   if (kind === 'wind') {
     if (!isDoll) return false;
-    target.wind = Math.min(target.maxWind, target.wind + Math.max(0, amount));
-    if (target.wind >= target.maxWind && target.durability > 0) target.status = 'active';
+    target.windUpCharge = Math.min(target.maxWindUp, target.windUpCharge + Math.max(0, amount));
+    if (target.windUpCharge >= target.maxWindUp && target.durability > 0) target.status = 'active';
+    return true;
+  }
+  if (kind === 'heal') {
+    if (isDoll) target.durability = Math.min(target.maxDurability, target.durability + Math.max(0, amount));
+    else target.hp = Math.min(target.maxHp, target.hp + Math.max(0, amount));
     return true;
   }
   if (isDoll && kind !== 'damage') return false;
-  if (kind === 'heal') { target.hp = Math.min(target.maxHp, target.hp + Math.max(0, amount)); return true; }
   if (kind !== 'damage') return true;
-  const ownerAffinity = target.side === 'hero' ? HERO_ITEM_AFFINITIES[target.slot] : undefined;
-  const armor = target.side === 'hero' ? Math.min(3, Math.round(target.items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * (item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1), 0))) : 0;
-  const damage = Math.max(1, amount - armor);
+  const ownerAffinity = heroClassForActor(target);
+  const equipmentArmor = target.side === 'hero' ? Math.round(target.items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * (item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1), 0)) : 0;
+  const form = target.isPuppet ? getPuppetForm(target.puppetFormId) : undefined;
+  const armor = target.side === 'hero' ? Math.min(8, equipmentArmor + (form?.armor ?? 0) + attributeModifier(target.attributes.constitution)) : 0;
+  const damage = Math.max(1, Math.round(Math.max(0, amount - armor) * (isDoll ? form?.damageTakenMultiplier ?? 1 : 1)));
   if (isDoll) {
     target.durability = Math.max(0, target.durability - damage);
-    target.wind = Math.max(0, target.wind - damage);
+    target.windUpCharge = Math.max(0, target.windUpCharge - damage);
     if (target.durability === 0) {
       target.status = 'dead';
+      target.windUpCharge = 0;
       for (const item of target.items.splice(0)) { delete item.cell; state.floor.push(item); }
       state.item = state.heroes[0]?.items[0] ?? null;
       record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: target.name, targetId: target.id, targetName: target.name, amount: 0, transition: 'permadeath', message: `${target.name}: окончательная гибель` });
       resolveOutcome(state);
-    } else if (target.wind === 0) target.status = 'stopped';
+    } else {
+      if (form?.passiveId === 'bastion-counterwind') {
+        target.puppetPassiveState.hitsTaken++;
+        if (target.puppetPassiveState.hitsTaken % 3 === 0) target.windUpCharge = Math.min(target.maxWindUp, target.windUpCharge + 12);
+      }
+      if (target.windUpCharge === 0) target.status = 'stopped';
+      else if (target.windUpCharge >= target.maxWindUp) target.status = 'active';
+    }
     return true;
   }
   target.hp = Math.max(0, target.hp - damage);
@@ -180,6 +248,11 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
   if (state.phase !== 'combat' || state.outcome !== 'ongoing') return;
   state.elapsedMs += deltaMs;
   const boss = state.enemies.find(enemy => enemy.isBoss);
+  if (!boss && !state.combatEnraged && state.elapsedMs >= COMBAT_CONFIG.combatEnrageMs) {
+    state.combatEnraged = true;
+    const first = state.enemies[0];
+    if (first) record(state, { kind: 'state', actorId: first.id, sourceId: first.id, sourceName: first.name, targetId: first.id, targetName: first.name, amount: 0, message: 'Враги входят в ярость' });
+  }
   if (boss && !state.bossEnraged && state.elapsedMs >= COMBAT_CONFIG.bossEnrageMs) {
     state.bossEnraged = true;
     record(state, { kind: 'state', actorId: boss.id, sourceId: boss.id, sourceName: boss.name, targetId: boss.id, targetName: boss.name, amount: 0, message: `${boss.name} входит в ярость` });
@@ -187,10 +260,13 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
   for (const hero of state.heroes) {
     if (hero.status === 'rebirthing') {
       hero.rebirthMs = Math.max(0, hero.rebirthMs - deltaMs);
-      if (hero.rebirthMs === 0) { hero.status = 'stopped'; hero.durability = hero.maxDurability = COMBAT_CONFIG.dollDurability; hero.wind = 0; hero.maxWind = COMBAT_CONFIG.maxWind; }
+      if (hero.rebirthMs === 0 && transformHeroToPuppet(hero)) {
+        const form = getPuppetForm(hero.puppetFormId)!;
+        record(state, { kind: 'state', actorId: hero.id, sourceId: hero.id, sourceName: form.name, targetId: hero.id, targetName: hero.name, amount: 0, transition: 'puppet', message: `${hero.name} перерождается: ${form.name}` });
+      }
     } else if (hero.status === 'active') {
-      hero.wind = Math.max(0, hero.wind - COMBAT_CONFIG.windPerSecond * deltaMs / 1000);
-      if (hero.wind === 0) hero.status = 'stopped';
+      hero.windUpCharge = Math.max(0, hero.windUpCharge - getPuppetWindDrain(hero) * deltaMs / 1000);
+      if (hero.windUpCharge === 0) hero.status = 'stopped';
     }
   }
   for (const hero of [...state.heroes].sort((a, b) => a.slot - b.slot)) {
@@ -201,19 +277,40 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       if (item.remainingMs > 0) continue;
       const { target, reason } = evaluateItem(state, hero, item);
       if (!target || reason) continue;
-      const healthBefore = target.hp, windBefore = target.wind;
-      const bonuses = itemBonuses(item, hero.items, HERO_ITEM_AFFINITIES[hero.slot]);
+      const healthBefore = target.hp, durabilityBefore = target.durability, windBefore = target.windUpCharge;
+      const affinity = heroClassForActor(hero);
+      const bonuses = itemBonuses(item, hero.items, affinity);
+      const puppetRules = getPuppetItemRules(hero, item, target.id);
       const healing = item.effect === 'heal';
       const winding = item.effect === 'wind';
       const actionAmount = Math.round((winding ? (item.windAmount ?? item.damage) + bonuses.wind
         : healing ? item.damage + bonuses.healing
-        : item.damage + bonuses.damage) * (item.classAffinity === HERO_ITEM_AFFINITIES[hero.slot] ? COMBAT_CONFIG.classAffinityMultiplier : 1));
-      applyEffect(state, target.id, winding ? 'wind' : healing ? 'heal' : 'damage', actionAmount);
-      const dealt = healing ? target.hp - healthBefore : winding ? target.wind - windBefore : healthBefore - target.hp;
+        : item.damage + bonuses.damage) * (item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1) * puppetRules.outputMultiplier * itemAttributeFactor(hero, item));
+      const triggered = applyEffect(state, target.id, winding ? 'wind' : healing ? 'heal' : 'damage', actionAmount);
+      const dealt = healing ? (target.status === 'human' ? target.hp - healthBefore : target.durability - durabilityBefore) : winding ? target.windUpCharge - windBefore : healthBefore - target.hp;
       record(state, { kind: 'item', actorId: hero.id, sourceId: item.id, sourceName: item.name, targetId: target.id, targetName: target.name, amount: dealt,
         defeatedTarget: !healing && !winding && target.side === 'enemy' && target.status === 'dead',
         message: `${item.name} → ${target.name}: ${dealt} ${healing ? 'лечения' : winding ? 'завода' : 'урона'}` });
-      item.remainingMs = item.cooldownMs * bonuses.cooldownFactor;
+      item.remainingMs = item.cooldownMs * bonuses.cooldownFactor * puppetRules.cooldownMultiplier * attributeCooldownFactor(hero);
+      if (triggered && hero.isPuppet) {
+        registerPuppetItemTrigger(hero, !healing && !winding && target.side === 'enemy' ? target.id : undefined);
+        hero.windUpCharge = Math.max(0, hero.windUpCharge - puppetRules.chargeCost);
+        hero.windUpCharge = Math.min(hero.maxWindUp, hero.windUpCharge + puppetRules.chargeRefund);
+        if (puppetRules.durabilityRepair) hero.durability = Math.min(hero.maxDurability, hero.durability + puppetRules.durabilityRepair);
+        if (hero.windUpCharge === 0) hero.status = 'stopped';
+        else if (hero.windUpCharge >= hero.maxWindUp && hero.durability > 0) hero.status = 'active';
+        if (puppetRules.adjacentCooldownReductionMs > 0) for (const other of hero.items) {
+          if (other.id !== item.id && areAdjacent(item, other)) {
+            other.remainingMs = Math.max(0, other.remainingMs - puppetRules.adjacentCooldownReductionMs);
+          }
+        }
+        if (puppetRules.oracleCharge > 0) {
+          const recipient = state.heroes.filter(candidate => candidate.id !== hero.id && candidate.isPuppet &&
+            (candidate.status === 'active' || candidate.status === 'stopped') && candidate.windUpCharge < candidate.maxWindUp)
+            .sort((a, b) => a.windUpCharge / a.maxWindUp - b.windUpCharge / b.maxWindUp || a.slot - b.slot)[0];
+          if (recipient) applyEffect(state, recipient.id, 'wind', puppetRules.oracleCharge);
+        }
+      }
       if (state.outcome !== 'ongoing') return;
     }
   }
@@ -225,22 +322,44 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     if (!target) continue;
     const isDoll = target.status === 'stopped' || target.status === 'active';
     const healthBefore = isDoll ? target.durability : target.hp;
-    const attackDamage = enemy.attackDamage + (enemy.isBoss && state.bossEnraged ? COMBAT_CONFIG.bossEnrageDamage : 0);
+    const enrage = enemy.isBoss && state.bossEnraged
+      ? COMBAT_CONFIG.bossEnrageDamage + Math.floor((state.elapsedMs - COMBAT_CONFIG.bossEnrageMs) / 10_000) * 8
+      : state.combatEnraged ? Math.floor((state.elapsedMs - COMBAT_CONFIG.combatEnrageMs) / COMBAT_CONFIG.combatEnrageDamageStepMs) * COMBAT_CONFIG.combatEnrageDamage : 0;
+    const attackDamage = enemy.attackDamage + enrage;
     applyEffect(state, target.id, 'damage', attackDamage);
     const dealt = healthBefore - (isDoll ? target.durability : target.hp);
     record(state, { kind: 'enemy', actorId: enemy.id, sourceId: enemy.id, sourceName: enemy.name, targetId: target.id, targetName: target.name, amount: dealt, message: `${enemy.name} → ${target.name}: ${dealt} урона` });
+    if (dealt > 0 && target.isPuppet && getPuppetForm(target.puppetFormId)?.passiveId === 'martyr-reflection' && enemy.status === 'enemy') {
+      const reflected = Math.floor(dealt * .25);
+      if (reflected > 0) {
+        applyEffect(state, enemy.id, 'damage', reflected);
+        record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: getPuppetForm(target.puppetFormId)!.name, targetId: enemy.id, targetName: enemy.name, amount: reflected, defeatedTarget: state.enemies.some(candidate => candidate.id === enemy.id && candidate.status === 'dead'), message: `${target.name} отражает ${reflected} урона` });
+      }
+    }
     enemy.attackRemainingMs = enemy.attackCooldownMs;
     if (state.outcome !== 'ongoing') return;
   }
   for (const actorId of state.commands.splice(0)) {
     const doll = state.heroes.find(hero => hero.id === actorId);
     if (!doll || doll.status !== 'stopped' || doll.durability <= 0) continue;
-    const previousWind = doll.wind;
-    doll.wind = Math.min(doll.maxWind, doll.wind + doll.maxWind / COMBAT_CONFIG.clicksToFull);
     const winder = state.heroes.find(hero => hero.status === 'human' || hero.status === 'active');
     if (!winder) continue;
-    record(state, { kind: 'wind', actorId: winder.id, sourceId: winder.id, sourceName: winder.name, targetId: doll.id, targetName: doll.name, amount: doll.wind - previousWind, message: `${winder.name} заводит ${doll.name}` });
-    if (doll.wind >= doll.maxWind) doll.status = 'active';
+    const previousWind = doll.windUpCharge;
+    if (getPuppetForm(doll.puppetFormId)?.passiveId === 'penitent-winding') {
+      doll.durability = Math.max(0, doll.durability - 1);
+      if (doll.durability === 0) {
+        doll.status = 'dead'; doll.windUpCharge = 0;
+        for (const item of doll.items.splice(0)) { delete item.cell; state.floor.push(item); }
+        state.item = state.heroes.find(hero => hero.status !== 'dead')?.items[0] ?? null;
+        record(state, { kind: 'state', actorId: doll.id, sourceId: doll.id, sourceName: doll.name, targetId: doll.id, targetName: doll.name, amount: 0, transition: 'permadeath', message: `${doll.name}: окончательная гибель` });
+        resolveOutcome(state);
+        if (state.outcome !== 'ongoing') break;
+        continue;
+      }
+    }
+    doll.windUpCharge = Math.min(doll.maxWindUp, doll.windUpCharge + rollManualWindAmount(state, doll));
+    record(state, { kind: 'wind', actorId: winder.id, sourceId: winder.id, sourceName: winder.name, targetId: doll.id, targetName: doll.name, amount: doll.windUpCharge - previousWind, message: `${winder.name} заводит ${doll.name}` });
+    if (doll.windUpCharge >= doll.maxWindUp) doll.status = 'active';
   }
   resolveOutcome(state);
 }
@@ -254,7 +373,7 @@ export function projectAction(event: CombatEvent): { actorId: string; sourceId: 
 }
 
 export function projectHero(hero: Combatant): { durability: number; wind: number; cooldownMs: number; rebirthSeconds: number } {
-  return { durability: hero.durability, wind: hero.wind, cooldownMs: hero.items[0]?.remainingMs ?? 0, rebirthSeconds: hero.rebirthMs / 1000 };
+  return { durability: hero.durability, wind: hero.windUpCharge, cooldownMs: hero.items[0]?.remainingMs ?? 0, rebirthSeconds: hero.rebirthMs / 1000 };
 }
 
 export function advanceClock(clock: CombatClock, deltaMs: number, visible: boolean, focused: boolean): number {

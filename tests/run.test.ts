@@ -64,19 +64,19 @@ describe('complete run', () => {
     const run = createRun(encounter, () => 0);
     const hero = encounter.heroes[3], lantern = hero.items[0];
     const blade = createItem('blade', 'test-blade'); blade.cell = 2; hero.items.push(blade);
-    hero.status = 'stopped'; hero.wind = 0; hero.durability = 42;
-    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBe(1.5);
+    hero.status = 'stopped'; hero.windUpCharge = 0; hero.durability = 42;
+    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBeCloseTo(1.275);
     victory(run); expect(run.stage).toBe('cleared');
     expect(openRoute(run)).toBe(true); expect(openRoute(run)).toBe(false);
     expect(enterRoom(run, 'cache')).toBe(true); expect(run.room).toBe(2);
     expect(new Set(run.offers.map(item => item.definitionId)).size).toBe(3);
     const reward = run.offers[0];
     expect(claimReward(run, reward.id)).toBe(true); expect(claimReward(run, reward.id)).toBe(false);
-    expect(encounter.stash.filter(item => item.id === reward.id)).toHaveLength(1);
+    expect(encounter.floor.filter(item => item.id === reward.id)).toHaveLength(1);
     expect(openRoute(run)).toBe(true); expect(enterRoom(run, 'workshop')).toBe(true);
-    expect(windWorkshop(run)).toBe(true); expect(hero.wind).toBe(hero.maxWind); expect(hero.status).toBe('active');
+    expect(windWorkshop(run)).toBe(true); expect(hero.windUpCharge).toBe(hero.maxWindUp); expect(hero.status).toBe('active');
     expect(calmWorkshopItem(run, lantern.id)).toBe(true); expect(calmWorkshopItem(run, lantern.id)).toBe(false);
-    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBe(1);
+    expect(itemBonuses(lantern, hero.items).cooldownFactor).toBeCloseTo(.85);
     expect(leaveWorkshop(run)).toBe(true); expect(leaveWorkshop(run)).toBe(false);
     for (let room = 4; room <= 10; room++) {
       expect(openRoute(run)).toBe(true);
@@ -96,25 +96,27 @@ describe('complete run', () => {
       } else victory(run);
     }
     expect(run.stage).toBe('victory'); expect(openRoute(run)).toBe(false);
-    expect(encounter.stash).toContain(reward);
+    expect(encounter.floor).not.toContain(reward);
   });
 
-  it('ends when every surviving doll is stopped at zero wind and nobody can wind another', () => {
+  it('continues when every surviving doll is stopped and ends when all are destroyed', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
     const run = createRun(encounter); expect(beginRun(run)).toBe(true);
-    encounter.heroes.forEach(hero => { hero.status = 'stopped'; hero.durability = 1; hero.wind = 0; });
+    encounter.heroes.forEach(hero => { hero.status = 'stopped'; hero.durability = 1; hero.windUpCharge = 0; });
     expect(startBattle(encounter)).toBe(true);
     stepEncounter(encounter, 50);
-    syncRun(run); expect(run.stage).toBe('defeat'); expect(openRoute(run)).toBe(false);
+    syncRun(run); expect(run.stage).toBe('battle'); expect(openRoute(run)).toBe(false);
     expect(encounter.heroes.every(hero => hero.status === 'stopped')).toBe(true);
+    encounter.heroes.forEach(hero => applyEffect(encounter, hero.id, 'damage', 1000));
+    syncRun(run); expect(run.stage).toBe('defeat');
   });
 
-  it('carries permanent deaths, floor items, injuries and rebirth timers into the next fight', () => {
+  it('carries injuries and deaths but leaves floor items in the previous room', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
     const run = createRun(encounter); expect(beginRun(run)).toBe(true);
     const fallen = encounter.heroes[1], rebirthing = encounter.heroes[2];
     const dropped = fallen.items[0];
-    fallen.status = 'active'; fallen.durability = 1; fallen.wind = 10;
+    fallen.status = 'active'; fallen.durability = 1; fallen.windUpCharge = 10;
     rebirthing.status = 'rebirthing'; rebirthing.rebirthMs = 1250;
     encounter.heroes[0].hp = 37;
     expect(startBattle(encounter)).toBe(true);
@@ -126,7 +128,7 @@ describe('complete run', () => {
     expect(enterRoom(run, 'invalid')).toBe(false); expect(run.room).toBe(1);
     expect(enterRoom(run, 'battle-0')).toBe(true);
     expect(encounter.heroes[1]).toBe(fallen); expect(fallen.status).toBe('dead');
-    expect(encounter.floor).toContain(dropped);
+    expect(encounter.floor).not.toContain(dropped);
     expect(rebirthing.status).toBe('rebirthing'); expect(rebirthing.rebirthMs).toBe(1250);
     expect(encounter.heroes[0].hp).toBe(37); expect(encounter.phase).toBe('preparation');
   });
