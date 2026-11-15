@@ -427,7 +427,7 @@ export class PhaserHUD {
       this.titleText(hero.name.toUpperCase(), nameX, nameY, nameSize, stopped || hero.status === 'dead' ? '#d5d5d8' : '#fff2d9', nameTextW, .5);
       const statusLabel = actorStatus[hero.status].toUpperCase();
       const statusY = nameY + nameSize - 1;
-      let statusFontSize = Math.max(8, Math.round(Math.min(compact ? 10 : 13, boardSize * .042, (nameW - 8) / (statusLabel.length * .58))));
+      let statusFontSize = Math.max(7, Math.round(Math.min(compact ? 8 : 11, boardSize * .035, (nameW - 8) / (statusLabel.length * .58))));
       const statusText = this.scene.add.text(nameX, statusY, statusLabel, {
         fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: statusFontSize, letterSpacing: compact ? 0 : .2,
         color: stopped || hero.status === 'dead' ? '#e5e2df' : '#f4e5cd', resolution: 2, stroke: '#171414', strokeThickness: 1,
@@ -444,18 +444,19 @@ export class PhaserHUD {
       const animation = this.windAnimations.get(hero.id);
       const shownWind = animation ? animation.from + (animation.to - animation.from) * Math.min(1, 1 - Math.max(0, animation.until - this.now) / 260) : hero.windUpCharge;
       this.resourceModule(boardX, boardY, boardSize, hero, shownWind);
-      const infoSize = Math.max(20, Math.min(28, boardSize * .09));
-      const infoX = boardX + boardSize - infoSize - Math.max(12, boardSize * .065), infoY = boardY + boardSize * .34;
+      const cell = Math.max(1, Math.floor(boardSize * Math.min(layout.tray[2], layout.tray[3]) / INVENTORY_GRID_SIZE));
+      const gridSize = INVENTORY_GRID_SIZE * cell;
+      const gridX = boardX + boardSize * (layout.tray[0] + layout.tray[2] / 2) - gridSize / 2;
+      const gridY = boardY + boardSize * (layout.tray[1] + layout.tray[3] / 2) - gridSize / 2;
+      const availableInfoWidth = Math.max(1, gridX - (boardX + boardSize * .07));
+      const infoSize = Math.min(38, boardSize * .13, Math.max(1, availableInfoWidth - 4));
+      const infoX = boardX + boardSize * .07 + (availableInfoWidth - infoSize) / 2, infoY = gridY + cell * .2;
       this.button('', infoX, infoY, infoSize, infoSize, 'hero-info', hero.id);
       const infoGlyph = this.scene.add.text(infoX + infoSize / 2, infoY + infoSize / 2, 'i', {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(infoSize * .67)}px`,
         color: '#f6e4c1', stroke: '#171014', strokeThickness: 2, resolution: 2,
       }).setOrigin(.5, .5);
       this.root.add(infoGlyph);
-      const cell = Math.max(1, Math.floor(boardSize * Math.min(layout.tray[2], layout.tray[3]) / INVENTORY_GRID_SIZE));
-      const gridSize = INVENTORY_GRID_SIZE * cell;
-      const gridX = boardX + boardSize * (layout.tray[0] + layout.tray[2] / 2) - gridSize / 2;
-      const gridY = boardY + boardSize * (layout.tray[1] + layout.tray[3] / 2) - gridSize / 2;
       const gridMarks = this.scene.add.graphics();
       const itemOrigins: CombatItem[] = [];
       for (let i = 0; i < INVENTORY_CELL_COUNT; i++) {
@@ -1318,7 +1319,7 @@ export class PhaserHUD {
     this.modalBackdrop(); this.panelTexture(x, y, w, h);
     // Consume clicks outside controls while the dialog is open.
     this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'options-backdrop' });
-    this.titleText('Опции', x + w / 2, y + h * .205, Math.min(28, h * .085), '#f1d49f', w * .75, .5).setOrigin(.5);
+    this.titleText('Опции', x + w / 2, y + h * .24, Math.min(28, h * .085), '#f1d49f', w * .75, .5).setOrigin(.5);
     const compact = w < 420;
     const inset = Math.max(30, w * .09), buttonW = compact ? 88 : 116;
     const trackX = x + inset, trackW = Math.max(36, w - inset * 2 - buttonW - 18);
@@ -1327,7 +1328,7 @@ export class PhaserHUD {
       { channel: 'effects', label: 'Звуки', value: this.ui.audioSettings.effects, muted: this.ui.audioSettings.effectsMuted },
     ] as const;
     rows.forEach((row, index) => {
-      const rowY = y + h * (.30 + index * .23);
+      const rowY = y + h * (.35 + index * .18);
       const font = compact ? 14 : 16;
       this.text(row.label, trackX, rowY, font, '#f4e2c4');
       this.text(`${Math.round(row.value * 100)}%`, trackX + trackW, rowY, font, '#f4e2c4', undefined, 1);
@@ -1343,7 +1344,7 @@ export class PhaserHUD {
       this.zones.push({ x: trackX, y: trackY - 14, width: trackW, height: 40, action: 'audio-volume', value: row.channel });
       this.button(row.muted ? 'Вкл.' : 'Выкл.', trackX + trackW + 18, rowY + 8, buttonW, 40, 'audio-mute', row.channel);
     });
-    this.button('Готово', x + w * .20, y + h * .73, w * .60, Math.min(46, h * .13), 'options');
+    this.button('Готово', x + w * .20, y + h * .69, w * .60, Math.min(46, h * .13), 'options');
   }
 
   private modalBackdrop(): void {
@@ -1363,18 +1364,49 @@ export class PhaserHUD {
   private heroInfoDialog(): void {
     const hero = this.ui.state.heroes.find(candidate => candidate.id === this.ui.heroInfoId);
     if (!hero) return;
-    const w = Math.min(this.width - 20, 660), h = Math.min(this.height - 20, 540), x = (this.width - w) / 2, y = (this.height - h) / 2;
+    const w = Math.min(this.width - 20, 660), h = Math.min(this.height - 20, hero.isPuppet ? 690 : 560), x = (this.width - w) / 2, y = (this.height - h) / 2;
     this.modalBackdrop(); this.panelTexture(x, y, w, h);
     this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'close-hero-info' });
-    this.titleText(hero.name, x + w / 2, y + h * .18, 24, '#f1d49f', w * .8, .5);
+    this.titleText(hero.name, x + w / 2, y + h * .215, Math.min(26, h * .06), '#f1d49f', w * .76, .5).setOrigin(.5);
     const s = hero.attributes;
-    const mod = (value: number): string => { const n = attributeModifier(value); return n >= 0 ? `+${n}` : `${n}`; };
+    const signed = (value: number): string => value >= 0 ? `+${value}` : `−${Math.abs(value)}`;
     const form = hero.isPuppet ? getPuppetForm(hero.puppetFormId) : undefined;
     const pending = hero.status === 'rebirthing' ? getPuppetForm(hero.pendingPuppetFormId) : undefined;
-    const text = `${actorStatus[hero.status]}${form ? ` · ${form.name}` : pending ? ` · станет ${pending.name}` : ''}\n\nСила ${s.strength} (${mod(s.strength)}) · урон оружия +${attributeModifier(s.strength) * 5}%\nЛовкость ${s.dexterity} (${mod(s.dexterity)}) · кулдауны −${attributeModifier(s.dexterity) * 2}%\nСтойкость ${s.constitution} (${mod(s.constitution)}) · броня +${attributeModifier(s.constitution)}\nРазум ${s.intellect} (${mod(s.intellect)}) · урон других вещей +${attributeModifier(s.intellect) * 5}%\nВоля ${s.wisdom} (${mod(s.wisdom)}) · лечение +${attributeModifier(s.wisdom) * 5}%\nДух ${s.presence} (${mod(s.presence)}) · подзавод вещами +${attributeModifier(s.presence) * 5}%${form ? `\n\n${puppetBranchLabels[form.branch]} · прочность ${hero.durability}/${hero.maxDurability} · завод ${Math.ceil(hero.windUpCharge)}/${hero.maxWindUp}\nБроня формы ${form.armor} · расход ${form.windDrainPerSecond}/с · входящий урон ×${form.damageTakenMultiplier.toFixed(2)}\n${form.passiveName}: ${form.passiveDescription}\n${form.cellModifiers.map(cell => cell.label).join(' ')}` : ''}`;
-    const body = this.text(text, x + w * .09, y + h * .24, this.width < 820 ? 13 : 15, '#eadcc4', w * .82);
-    if (body.height > h * .58) body.setScale(h * .58 / body.height);
-    this.button('Закрыть', x + w * .16, y + h * .83, w * .68, Math.min(48, h * .12), 'close-hero-info');
+    const stateLabel = `${actorStatus[hero.status]}${form ? ` · ${form.name}` : pending ? ` · станет ${pending.name}` : ''}`;
+    const stateText = this.text(stateLabel, x + w / 2, y + h * .25, 13, '#d9c7aa', w * .76, .5).setFontFamily('Arial, sans-serif');
+    if (stateText.width > w * .76) stateText.setScale(w * .76 / stateText.width);
+    const left = x + w * .10, contentWidth = w * .80, gap = Math.max(14, w * .04), columnWidth = (contentWidth - gap) / 2;
+    const rows = [
+      { name: 'Сила', value: s.strength, effect: `Урон оружия ${signed(attributeModifier(s.strength) * 5)}%` },
+      { name: 'Ловкость', value: s.dexterity, effect: `Перезарядка ${signed(-attributeModifier(s.dexterity) * 2)}%` },
+      { name: 'Стойкость', value: s.constitution, effect: `Броня ${signed(attributeModifier(s.constitution))}` },
+      { name: 'Разум', value: s.intellect, effect: `Урон вещей ${signed(attributeModifier(s.intellect) * 5)}%` },
+      { name: 'Воля', value: s.wisdom, effect: `Лечение ${signed(attributeModifier(s.wisdom) * 5)}%` },
+      { name: 'Дух', value: s.presence, effect: `Подзавод ${signed(attributeModifier(s.presence) * 5)}%` },
+    ];
+    this.titleText('Характеристики', left, y + h * .29, Math.min(17, h * .038), '#e9ca91', contentWidth);
+    rows.forEach((row, index) => {
+      const col = index % 2, line = Math.floor(index / 2);
+      const px = left + col * (columnWidth + gap), py = y + h * (.335 + line * .07);
+      const font = Math.max(9, Math.min(15, h * .027));
+      const name = this.text(row.name, px, py, font, '#f2e4ce').setFontFamily('Arial, sans-serif');
+      if (name.width > columnWidth * .56) name.setScale(columnWidth * .56 / name.width);
+      const value = this.text(`${row.value} (${signed(attributeModifier(row.value))})`, px + columnWidth, py, font, '#f0d39e', undefined, 1).setFontFamily('Arial, sans-serif');
+      if (value.width > columnWidth * .42) value.setScale(columnWidth * .42 / value.width);
+      const effect = this.text(row.effect, px, py + Math.max(13, h * .027), Math.max(8, font - 2), '#bdb1a7').setFontFamily('Arial, sans-serif').setFontStyle('normal');
+      if (effect.width > columnWidth) effect.setScale(columnWidth / effect.width);
+    });
+    if (form) {
+      const formY = y + h * .56;
+      this.titleText('Кукольная форма', left, formY, Math.min(17, h * .038), '#e9ca91', contentWidth);
+      const detail = `${puppetBranchLabels[form.branch]}\nПрочность ${hero.durability}/${hero.maxDurability} · завод ${Math.ceil(hero.windUpCharge)}/${hero.maxWindUp} · броня ${form.armor}\nРасход ${form.windDrainPerSecond}/с · входящий урон ×${form.damageTakenMultiplier.toFixed(2)}\n\n${form.passiveName}: ${form.passiveDescription}\n${form.cellModifiers.map(cell => cell.label).join(' ')}`;
+      const body = this.text(detail, left, formY + h * .04, Math.max(10, Math.min(14, h * .025)), '#e3d5c0', contentWidth).setFontFamily('Arial, sans-serif').setFontStyle('normal');
+      if (body.height > h * .19) body.setScale(h * .19 / body.height);
+    } else if (pending) {
+      const body = this.text(`Перерождение: ${pending.name}`, left, y + h * .57, 13, '#e3d5c0', contentWidth).setFontFamily('Arial, sans-serif');
+      if (body.width > contentWidth) body.setScale(contentWidth / body.width);
+    }
+    this.button('Закрыть', x + w * .20, y + h * .79, w * .60, Math.min(48, h * .10), 'close-hero-info');
   }
 
   private card(x: number, y: number, width: number, height: number, label: string): void {
