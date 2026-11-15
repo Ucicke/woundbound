@@ -365,8 +365,8 @@ export class PhaserHUD {
   }
 
   private header(): void {
-    const stageName = this.ui.run.stage === 'victory' ? 'МЕХАНИЗМ СУДЬБЫ ОДОЛЁН' : this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ ${Math.min(3, Math.ceil(this.ui.run.room / 3))} · СПУСК ${this.ui.run.room}/10`;
-    if (this.ui.run.stage !== 'opening') {
+    const stageName = this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ ${Math.min(3, Math.ceil(this.ui.run.room / 3))} · СПУСК ${this.ui.run.room}/10`;
+    if (this.ui.run.stage !== 'opening' && this.ui.run.stage !== 'victory') {
       const available = Math.max(40, this.width - 2 * (162 + this.left.x));
       const panelW = Math.min(420, this.width * .57, available);
       const panelH = Math.min(58, Math.max(54, this.height * .06));
@@ -702,11 +702,13 @@ export class PhaserHUD {
 
   private room(drag?: DragPreview): void {
     const run = this.ui.run;
-    const title = run.stage === 'victory' ? 'Архонт повержен' : run.stage === 'defeat' ? 'Конец пути' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? 'Тишина после боя' : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
-    this.panelTexture(this.right.x + 5, this.right.y + 3, this.right.width - 10, 27);
-    if (run.stage !== 'opening') {
-      const heading = this.titleText(title, this.right.x + this.right.width / 2, this.right.y + 16, this.width < 820 ? 15 : 19, '#f2d39a', this.right.width - 48, .5);
-      heading.setOrigin(.5, .5);
+    if (run.stage !== 'victory') {
+      const title = run.stage === 'defeat' ? 'Конец пути' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? 'Тишина после боя' : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
+      this.panelTexture(this.right.x + 5, this.right.y + 3, this.right.width - 10, 27);
+      if (run.stage !== 'opening') {
+        const heading = this.titleText(title, this.right.x + this.right.width / 2, this.right.y + 16, this.width < 820 ? 15 : 19, '#f2d39a', this.right.width - 48, .5);
+        heading.setOrigin(.5, .5);
+      }
     }
     if (run.stage !== 'battle') this.roomBackdrop(true);
     if (run.stage === 'battle') this.battlefield();
@@ -1212,10 +1214,11 @@ export class PhaserHUD {
   private ending(): void {
     const win = this.ui.run.stage === 'victory';
     const x = this.right.x + 12, y = this.field.y + 26, w = this.right.width - 24;
-    const title = win ? 'Архонт повержен' : 'Завод остановлен';
-    this.panelTexture(x, y - 8, w, 86);
-    this.titleText(title, x + w / 2, y, this.width < 820 ? 20 : 32, win ? '#f1ce86' : '#d3847a', w, .5);
-    this.text(win ? 'Забег завершён. Победа осталась за отрядом.' : 'Все куклы разрушены.', x, y + 43, this.width < 820 ? 9 : 13, '#e9d5b5', w);
+    if (!win) {
+      this.panelTexture(x, y - 8, w, 86);
+      this.titleText('Завод остановлен', x + w / 2, y, this.width < 820 ? 20 : 32, '#d3847a', w, .5);
+      this.text('Все куклы разрушены.', x, y + 43, this.width < 820 ? 9 : 13, '#e9d5b5', w);
+    }
     this.button('Начать новый забег', x, this.right.y + this.right.height - 76, w, 64, 'restart', '', true);
   }
 
