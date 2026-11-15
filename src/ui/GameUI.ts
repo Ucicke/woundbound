@@ -7,6 +7,7 @@ import { ITEM_CATEGORY_LABELS, ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ItemDialogue } from '../presentation/itemDialogue.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
 import { getPuppetItemCellModifiers, getPuppetItemRules } from '../combat/puppets.ts';
+import { loadAudioSettings, saveAudioSettings, type AudioChannel } from '../presentation/AudioSettings.ts';
 
 /** Game state and player commands. Phaser renders this model; this class has no DOM dependency. */
 export class GameUI {
@@ -19,6 +20,8 @@ export class GameUI {
   confirmReset = false;
   paused = false;
   helpOpen = false;
+  optionsOpen = false;
+  readonly audioSettings = loadAudioSettings();
   heroInfoId: string | null = null;
   latestAction?: CombatEvent;
   highlightUntil = 0;
@@ -140,7 +143,13 @@ export class GameUI {
   }
 
   setPaused(paused: boolean): void { this.paused = paused; }
-  get dialogOpen(): boolean { return this.confirmReset || this.helpOpen || this.heroInfoId !== null; }
+  get dialogOpen(): boolean { return this.confirmReset || this.helpOpen || this.optionsOpen || this.heroInfoId !== null; }
+
+  setAudioVolume(channel: AudioChannel, value: number): void {
+    this.audioSettings[channel] = Math.max(0, Math.min(1, Math.round(value * 100) / 100));
+    this.audioSettings[`${channel}Muted`] = false;
+    saveAudioSettings(this.audioSettings);
+  }
 
   itemDescription(item: CombatItem, hero?: Combatant): string {
     const ownerAffinity = hero ? heroClassForActor(hero) : undefined;
@@ -253,6 +262,12 @@ export class GameUI {
     else if (name === 'store') this.dropToStash(value);
     else if (name === 'wind') queueWinding(this.state, value);
     else if (name === 'help') this.helpOpen = !this.helpOpen;
+    else if (name === 'options') { this.optionsOpen = !this.optionsOpen; this.startLoadoutMenuOpen = false; }
+    else if (name === 'audio-mute' && (value === 'music' || value === 'effects')) {
+      const key = `${value}Muted` as const;
+      this.audioSettings[key] = !this.audioSettings[key];
+      saveAudioSettings(this.audioSettings);
+    }
     else if (name === 'hero-info') this.heroInfoId = value;
     else if (name === 'close-hero-info') this.heroInfoId = null;
     else if (name === 'restart' && (this.run.stage === 'defeat' || this.run.stage === 'victory')) {
@@ -265,7 +280,7 @@ export class GameUI {
       Object.assign(this.run, createRun(this.state));
       this.prepareFastEncounter(); this.selectedItem = null; this.confirmReset = false;
       this.startLoadoutMenuOpen = false;
-      this.heroInfoId = null; this.helpOpen = false;
+      this.heroInfoId = null; this.helpOpen = false; this.optionsOpen = false;
       this.message = ''; this.latestAction = undefined; this.highlightUntil = 0; this.paused = false;
       this.dialogue.reset(); this.dialogueSequence = 0;
     }

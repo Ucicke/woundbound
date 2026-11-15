@@ -5,6 +5,7 @@ import { ACTOR_STATE_FRAME_SIZE, ACTOR_STATES_ATLAS_URL, CLASS_ITEM_ATLAS_TEXTUR
 import { GameUI } from '../ui/GameUI.ts';
 import { PhaserHUD, type DragPreview } from '../ui/PhaserHUD.ts';
 import { GameAudio } from '../presentation/GameAudio.ts';
+import type { AudioChannel } from '../presentation/AudioSettings.ts';
 
 interface CanvasDrag {
   item: CombatItem; reward: boolean; startX: number; startY: number; x: number; y: number; active: boolean;
@@ -25,6 +26,7 @@ export class CombatScene extends Phaser.Scene {
   private pointerY = 0;
   private hoverTarget = '';
   private hoverSoundTarget = '';
+  private volumeDrag?: { channel: AudioChannel; x: number; width: number; pointerId: number };
   private encounterState?: GameUI['state'];
   private lastStage?: GameUI['run']['stage'];
   private preventCanvasContextMenu = (event: MouseEvent): void => { event.preventDefault(); };
@@ -93,6 +95,7 @@ export class CombatScene extends Phaser.Scene {
     this.focused = document.hasFocus();
     this.ui = new GameUI();
     this.gameAudio = new GameAudio(this);
+    this.gameAudio.applySettings(this.ui.audioSettings);
     this.encounterState = this.ui.state;
     this.hud = new PhaserHUD(this, this.ui);
     this.scale.on('resize', (size: Phaser.Structs.Size) => this.cameras.resize(size.width, size.height));
@@ -215,6 +218,7 @@ export class CombatScene extends Phaser.Scene {
       this.encounterState = this.ui.state;
       this.clock.accumulator = 0;
       this.drag = undefined; this.dragAnchor = undefined; this.dragValid = undefined;
+      this.volumeDrag = undefined;
       this.pointerX = -1; this.pointerY = -1;
       this.hoverTarget = '';
       this.hoverSoundTarget = '';
@@ -238,6 +242,11 @@ export class CombatScene extends Phaser.Scene {
     if (this.startingRun) return;
     this.pointerX = pointer.x; this.pointerY = pointer.y;
     const zone = this.hud.zoneAt(pointer.x, pointer.y);
+    if (this.ui.optionsOpen && zone?.action === 'audio-volume' && (zone.value === 'music' || zone.value === 'effects')) {
+      this.volumeDrag = { channel: zone.value, x: zone.x, width: zone.width, pointerId: pointer.id };
+      this.updateVolume(pointer.x); return;
+    }
+    if (this.ui.dialogOpen) return;
     if (pointer.button === 2) {
       if (zone?.itemId && (this.ui.state.phase === 'preparation' || this.ui.state.phase === 'result') && this.ui.rotateItem(zone.itemId)) this.gameAudio.play('ui');
       this.forceDraw();
@@ -275,6 +284,9 @@ export class CombatScene extends Phaser.Scene {
   private pointerUp(pointer: Phaser.Input.Pointer): void {
     if (this.startingRun) return;
     this.pointerX = pointer.x; this.pointerY = pointer.y;
+    if (this.volumeDrag?.pointerId === pointer.id) {
+      this.updateVolume(pointer.x); this.volumeDrag = undefined; return;
+    }
     const zone = this.hud.zoneAt(pointer.x, pointer.y);
     const drag = this.drag;
     if (drag) {
@@ -306,6 +318,7 @@ export class CombatScene extends Phaser.Scene {
       if (zone.action === 'room') this.gameAudio.play('door');
       else if (zone.action !== 'wind') this.gameAudio.play('ui');
       this.ui.action(zone.action, zone.value ?? '');
+      if (zone.action === 'audio-mute') this.gameAudio.applySettings(this.ui.audioSettings);
     }
     else if (!zone?.itemId && zone?.heroId && zone.cell !== undefined) this.ui.action('cell', `${zone.heroId}:${zone.cell}`);
     this.forceDraw();
@@ -313,6 +326,7 @@ export class CombatScene extends Phaser.Scene {
 
   private pointerMove(pointer: Phaser.Input.Pointer): void {
     this.pointerX = pointer.x; this.pointerY = pointer.y;
+    if (this.volumeDrag?.pointerId === pointer.id && pointer.isDown) { this.updateVolume(pointer.x); return; }
     const drag = this.drag;
     if (drag && pointer.isDown) {
       drag.x = pointer.x; drag.y = pointer.y;
@@ -344,7 +358,7 @@ export class CombatScene extends Phaser.Scene {
   private beginDescent(): void {
     if (this.startingRun || this.ui.run.stage !== 'opening') return;
     this.gameAudio.play('door');
-    if (!this.sound.get('background-music')?.isPlaying) this.sound.play('background-music', { loop: true, volume: .32 });
+    if (!this.sound.get('background-music')?.isPlaying) this.sound.play('background-music', { loop: true, volume: this.ui.audioSettings.musicMuted ? 0 : .32 * this.ui.audioSettings.music });
     this.startingRun = true;
     this.drag = undefined;
     const camera = this.cameras.main;
@@ -374,7 +388,16 @@ export class CombatScene extends Phaser.Scene {
       this.drag.grabX = x; this.drag.grabY = y; this.forceDraw();
     } else if ((key === 'r' || key === 'к') && this.ui.selectedItem) {
       event.preventDefault(); this.ui.rotateItem(this.ui.selectedItem); this.forceDraw();
-    } else if (key === 'escape' && this.ui.confirmReset) { this.ui.action('cancel-reset'); this.forceDraw(); }
+    } else if (key === 'escape' && this.ui.optionsOpen) { this.ui.action('options'); this.forceDraw(); }
+    else if (key === 'escape' && this.ui.confirmReset) { this.ui.action('cancel-reset'); this.forceDraw(); }
+  }
+
+  private updateVolume(x: number): void {
+    const drag = this.volumeDrag;
+    if (!drag) return;
+    this.ui.setAudioVolume(drag.channel, (x - drag.x) / drag.width);
+    this.gameAudio.applySettings(this.ui.audioSettings);
+    this.forceDraw();
   }
 
   private findItem(id: string): CombatItem | undefined { return this.ui.allItems.find(item => item.id === id) ?? this.ui.run.offers.find(item => item.id === id); }

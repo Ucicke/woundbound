@@ -136,7 +136,7 @@ export class PhaserHUD {
     const drawKey = [this.width, this.height, this.now, Math.round(pointerX), Math.round(pointerY), this.ui.run.stage, this.ui.run.room,
       this.ui.state.phase, this.ui.state.outcome, this.ui.state.elapsedMs, this.ui.state.nextEventSequence, actorKey, looseKey,
       this.ui.selectedItem ?? '', this.ui.helpOpen, this.ui.heroInfoId ?? '', this.ui.confirmReset, this.ui.dialogOpen, this.ui.paused,
-      this.ui.startLoadoutMenuOpen, this.ui.startingLoadout, this.clickNotice?.until ?? 0, dragKey].join('~');
+      this.ui.startLoadoutMenuOpen, this.ui.startingLoadout, this.ui.optionsOpen, JSON.stringify(this.ui.audioSettings), this.clickNotice?.until ?? 0, dragKey].join('~');
     if (drawKey === this.lastDrawKey) return;
     this.lastDrawKey = drawKey;
     this.hover = this.zoneAt(pointerX, pointerY);
@@ -146,6 +146,7 @@ export class PhaserHUD {
     if (this.ui.run.stage === 'opening') {
       this.tooltips.hide();
       this.openingModal();
+      if (this.ui.optionsOpen) this.optionsDialog();
       this.text(GAME_VERSION, 8, this.height - 15, 10, '#aaa3aa').setAlpha(.65);
       return;
     }
@@ -167,6 +168,7 @@ export class PhaserHUD {
     if (this.ui.confirmReset) this.resetDialog();
     if (this.ui.helpOpen) this.helpDialog();
     if (this.ui.heroInfoId) this.heroInfoDialog();
+    if (this.ui.optionsOpen) this.optionsDialog();
     if (this.ui.dialogOpen) { this.tooltips.hide(); return; }
     this.renderHoverTooltip(pointerX, pointerY, drag);
     if (this.clickNotice && this.clickNotice.until > this.now) {
@@ -349,7 +351,11 @@ export class PhaserHUD {
       g.lineStyle(1, primary ? 0xe7bf72 : 0x8a755c, 1).strokeRoundedRect(x, y, width, height, 5);
       this.root.add(g);
     }
-    if (label === '↻') this.text(label, x + width / 2, y + Math.max(3, (height - 20) / 2), Math.min(15, height * .43), hot ? '#ffffff' : '#fff0d4', width - 8, .5);
+    if (label === '⚙') {
+      const icon = this.scene.add.text(x + width / 2, y + height / 2, label, { fontFamily: 'Arial, sans-serif', fontSize: `${Math.round(height * .58)}px`, color: hot ? '#ffffff' : '#fff0d4', stroke: '#171414', strokeThickness: 1, resolution: 2 }).setOrigin(.5);
+      this.root.add(icon);
+    }
+    else if (label === '↻') this.text(label, x + width / 2, y + Math.max(3, (height - 20) / 2), Math.min(15, height * .43), hot ? '#ffffff' : '#fff0d4', width - 8, .5);
     else {
       const caption = this.titleText(label, x + width / 2, y + height / 2, Math.min(21, height * .43), hot ? '#ffffff' : '#fff0d4', width - 12, .5);
       caption.setOrigin(.5, .5);
@@ -360,7 +366,7 @@ export class PhaserHUD {
   private header(): void {
     const stageName = this.ui.run.stage === 'victory' ? 'МЕХАНИЗМ СУДЬБЫ ОДОЛЁН' : this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ ${Math.min(3, Math.ceil(this.ui.run.room / 3))} · СПУСК ${this.ui.run.room}/10`;
     if (this.ui.run.stage !== 'opening') {
-      const available = Math.max(40, this.width - 2 * (122 + this.left.x));
+      const available = Math.max(40, this.width - 2 * (162 + this.left.x));
       const panelW = Math.min(420, this.width * .57, available);
       const panelH = Math.min(58, Math.max(54, this.height * .06));
       const panelY = 3;
@@ -375,6 +381,7 @@ export class PhaserHUD {
     if (this.ui.run.stage !== 'opening') this.button('↻', this.width - 42 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'restart');
     this.button('?', this.width - 82 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'help');
     this.button('⛶', this.width - 122 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'fullscreen');
+    this.button('⚙', this.width - 162 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'options');
   }
 
   private party(drag?: DragPreview): void {
@@ -725,12 +732,13 @@ export class PhaserHUD {
     const selectorH = Math.max(32, Math.min(40, this.height * .055));
     const optionH = Math.max(30, Math.min(38, this.height * .05));
     const menuExtra = this.ui.startLoadoutMenuOpen ? 4 + optionH * 2 : 0;
-    const verticalLimit = Math.max(60, this.height * .50 - selectorH - menuExtra);
+    const optionsH = Math.max(34, Math.min(42, this.height * .055));
+    const verticalLimit = Math.max(60, this.height * .50 - selectorH - menuExtra - optionsH - 8);
     const w = Math.min(this.width - 28, 600, verticalLimit * 3);
     const h = w / 3;
     const selectorW = Math.min(360, w * .82, this.width - 32);
-    const groupH = h + 12 + selectorH + menuExtra;
-    const groupY = Math.max(this.height * .42, (this.height - groupH) / 2 + Math.min(40, this.height * .06));
+    const groupH = h + 12 + selectorH + menuExtra + 8 + optionsH;
+    const groupY = Math.max(4, Math.min(this.height - groupH - 6, Math.max(this.height * .42, (this.height - groupH) / 2 + Math.min(40, this.height * .06))));
     const x = (this.width - w) / 2, y = groupY;
     const logo = this.scene.add.image(this.width / 2, 0, 'ui-woundbound-logo').setOrigin(.5, 0);
     const logoWidth = Math.min(this.width * .84, 820, Math.max(1, y - 12) * logo.width / logo.height);
@@ -774,6 +782,8 @@ export class PhaserHUD {
           selectorW, optionH, 'set-start-loadout', option.id, this.ui.startingLoadout === option.id);
       });
     }
+    const optionsY = selectorY + selectorH + menuExtra + 8;
+    this.button('Опции', (this.width - selectorW) / 2, optionsY, selectorW, optionsH, 'options');
   }
 
   private roomBackdrop(dim: boolean): void {
@@ -1300,6 +1310,40 @@ export class PhaserHUD {
     const text = this.text('Вещи сражаются сами. Между боями перетаскивайте их в рюкзаки и поворачивайте правой кнопкой.\n\nПавший человек перерождается в куклу. Нажимайте на её карточку или спрайт, чтобы завести её: нужен действующий союзник.\n\nКуклы теряют прочность от ударов. Когда все окончательно погибнут, забег закончится. Оставленные на полу вещи пропадают при уходе.', x + w * .09, y + h * .28, 14, '#eadcc4', w * .82);
     if (text.height > h * .51) text.setScale(h * .51 / text.height);
     this.button('Понятно', x + 18, y + h - 56, w - 36, 44, 'help');
+  }
+
+  private optionsDialog(): void {
+    const w = Math.min(this.width - 24, 570), h = Math.min(this.height - 24, 360);
+    const x = (this.width - w) / 2, y = (this.height - h) / 2;
+    this.modalBackdrop(); this.panelTexture(x, y, w, h);
+    // Consume clicks outside controls while the dialog is open.
+    this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'options-backdrop' });
+    this.titleText('Опции', x + w / 2, y + h * .205, Math.min(28, h * .085), '#f1d49f', w * .75, .5).setOrigin(.5);
+    const compact = w < 420;
+    const inset = Math.max(30, w * .09), buttonW = compact ? 88 : 116;
+    const trackX = x + inset, trackW = Math.max(36, w - inset * 2 - buttonW - 18);
+    const rows = [
+      { channel: 'music', label: 'Музыка', value: this.ui.audioSettings.music, muted: this.ui.audioSettings.musicMuted },
+      { channel: 'effects', label: 'Звуки', value: this.ui.audioSettings.effects, muted: this.ui.audioSettings.effectsMuted },
+    ] as const;
+    rows.forEach((row, index) => {
+      const rowY = y + h * (.30 + index * .23);
+      const font = compact ? 14 : 16;
+      this.text(row.label, trackX, rowY, font, '#f4e2c4');
+      this.text(`${Math.round(row.value * 100)}%`, trackX + trackW, rowY, font, '#f4e2c4', undefined, 1);
+      const trackY = rowY + 29, trackH = 12;
+      const bar = this.scene.add.graphics();
+      bar.fillStyle(0x160e17, 1).fillRoundedRect(trackX, trackY, trackW, trackH, 5);
+      bar.lineStyle(1, 0xa98660, .9).strokeRoundedRect(trackX, trackY, trackW, trackH, 5);
+      bar.fillStyle(row.muted ? 0x756c72 : 0xd3a15c, 1).fillRoundedRect(trackX + 2, trackY + 2, Math.max(0, (trackW - 4) * row.value), trackH - 4, 4);
+      const knobX = trackX + 2 + (trackW - 4) * row.value;
+      bar.fillStyle(0xf1d4a0, 1).fillCircle(knobX, trackY + trackH / 2, 7);
+      bar.lineStyle(2, 0x694a39, 1).strokeCircle(knobX, trackY + trackH / 2, 7);
+      this.root.add(bar);
+      this.zones.push({ x: trackX, y: trackY - 14, width: trackW, height: 40, action: 'audio-volume', value: row.channel });
+      this.button(row.muted ? 'Вкл.' : 'Выкл.', trackX + trackW + 18, rowY + 8, buttonW, 40, 'audio-mute', row.channel);
+    });
+    this.button('Готово', x + w * .20, y + h * .73, w * .60, Math.min(46, h * .13), 'options');
   }
 
   private modalBackdrop(): void {

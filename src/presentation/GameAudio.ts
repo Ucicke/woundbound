@@ -1,5 +1,6 @@
 import type Phaser from 'phaser';
 import type { EncounterState } from '../combat/simulation.ts';
+import type { AudioSettings } from './AudioSettings.ts';
 
 const effects = {
   'gear-1': 'gear-1.ogg', 'gear-2': 'gear-2.ogg', 'gear-3': 'gear-3.ogg',
@@ -24,6 +25,7 @@ export class GameAudio {
   private lastSequence = 0;
   private lastPlayed = new Map<Cue, number>();
   private nextVariation = 0;
+  private effectsVolume = 1;
 
   constructor(private readonly scene: Phaser.Scene) {}
 
@@ -34,10 +36,17 @@ export class GameAudio {
   play(cue: Cue): void {
     const now = this.scene.time.now;
     const config = cues[cue];
-    if (this.scene.sound.locked || now - (this.lastPlayed.get(cue) ?? -Infinity) < config.interval) return;
+    if (!this.effectsVolume || this.scene.sound.locked || now - (this.lastPlayed.get(cue) ?? -Infinity) < config.interval) return;
     const file = config.files[this.nextVariation++ % config.files.length]!;
     this.lastPlayed.set(cue, now);
-    this.scene.sound.play(`sfx-${file}`, { volume: config.volume });
+    this.scene.sound.play(`sfx-${file}`, { volume: config.volume * this.effectsVolume });
+  }
+
+  applySettings(settings: AudioSettings): void {
+    this.effectsVolume = settings.effectsMuted ? 0 : settings.effects;
+    const music = this.scene.sound.get('background-music');
+    if (music && 'setVolume' in music && typeof music.setVolume === 'function') music.setVolume(settings.musicMuted ? 0 : settings.music * .32);
+    if (!this.effectsVolume) for (const key of Object.keys(effects)) this.scene.sound.stopByKey(`sfx-${key}`);
   }
 
   consume(state: EncounterState, audible: boolean): void {
