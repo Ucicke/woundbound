@@ -2,7 +2,7 @@ import { createFullEncounter } from './encounter.ts';
 import { COMBAT_CONFIG } from './config.ts';
 import { areAdjacent, canPlaceItem, itemBonuses, moveItem, storeItem } from './inventory.ts';
 import { createRun, beginRun, calmWorkshopItem, claimReward, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop } from './run.ts';
-import { heroClassForActor, prepareEncounter, queueWinding, startBattle, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
+import { heroClassForActor, MAX_ARMOR, prepareEncounter, queueWinding, startBattle, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
 
 export type BalanceAgent = 'random' | 'synergy' | 'balanced';
 export type BalanceOutcome = 'victory' | 'defeat' | 'timeout';
@@ -77,8 +77,8 @@ function effectWeight(item: CombatItem): number {
 
 /** Rough expected combat value used only by the simulated agents' loot policy. */
 function loadoutPower(items: CombatItem[], affinity?: ItemClassAffinity): number {
-  const nativeFactor = (item: CombatItem): number => item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
-  const armor = Math.min(3, Math.round(items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * nativeFactor(item), 0)));
+  const nativeFactor = (item: CombatItem): number => affinity && item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
+  const armor = Math.min(MAX_ARMOR, Math.round(items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * nativeFactor(item), 0)));
   // Armor is unusually valuable in a long idle fight: it reduces every incoming hit.
   let score = armor * 20;
   for (const item of items) {
@@ -123,7 +123,7 @@ function placementOptions(state: EncounterState, item: CombatItem): PlacementOpt
         firstFit = false;
         const gain = Math.max(0, loadoutPower(hero.items, affinity) - before);
         hero.items.pop();
-        const classBonus = item.classAffinity === affinity ? singleItemValue(item, affinity) * 0.25 : 0;
+        const classBonus = affinity && item.classAffinity === affinity ? singleItemValue(item, affinity) * 0.25 : 0;
         const synergyScore = gain + classBonus;
         const fairness = Math.max(0.72, Math.min(1.28, 1 + (partyMean - before) / partyMean * 0.35));
         options.push({ heroId: hero.id, cell, rotation, synergyScore, balancedScore: synergyScore * fairness });
