@@ -4,6 +4,7 @@ import { INVENTORY_GRID_SIZE, canPlaceItem, rotatedShape } from '../combat/inven
 import { ACTOR_STATE_FRAME_SIZE, ACTOR_STATES_ATLAS_URL, CLASS_ITEM_ATLAS_TEXTURES, CLASS_ITEM_ATLAS_URLS, DOLL_STOPPED_ATLAS_URL, DOLL_STOPPED_FRAME_SIZE, ITEM_ATLAS_FRAME_SIZE, PUPPET_DEATH_ATLAS_URL, PUPPET_DEATH_FRAME_SIZE } from '../presentation/ArtCatalog.ts';
 import { GameUI } from '../ui/GameUI.ts';
 import { PhaserHUD, type DragPreview } from '../ui/PhaserHUD.ts';
+import { GameAudio } from '../presentation/GameAudio.ts';
 
 interface CanvasDrag {
   item: CombatItem; reward: boolean; startX: number; startY: number; x: number; y: number; active: boolean;
@@ -14,6 +15,7 @@ interface CanvasDrag {
 export class CombatScene extends Phaser.Scene {
   private ui!: GameUI;
   private hud!: PhaserHUD;
+  private gameAudio!: GameAudio;
   private clock: CombatClock = { accumulator: 0 };
   private focused = true;
   private nextRender = 0;
@@ -22,6 +24,7 @@ export class CombatScene extends Phaser.Scene {
   private pointerX = 0;
   private pointerY = 0;
   private hoverTarget = '';
+  private hoverSoundTarget = '';
   private encounterState?: GameUI['state'];
   private lastStage?: GameUI['run']['stage'];
   private preventCanvasContextMenu = (event: MouseEvent): void => { event.preventDefault(); };
@@ -67,6 +70,7 @@ export class CombatScene extends Phaser.Scene {
     this.load.image('ui-background-pattern', asset('/assets/ui/background-pattern.png'));
     this.load.image('ui-modal', asset('/assets/ui/gothic-modal-transparent.png'));
     this.load.audio('background-music', asset('/assets/audio/crimson-rose-loop.ogg'));
+    GameAudio.preload(this, asset);
   }
 
   create(): void {
@@ -88,6 +92,7 @@ export class CombatScene extends Phaser.Scene {
     }
     this.focused = document.hasFocus();
     this.ui = new GameUI();
+    this.gameAudio = new GameAudio(this);
     this.encounterState = this.ui.state;
     this.hud = new PhaserHUD(this, this.ui);
     this.scale.on('resize', (size: Phaser.Structs.Size) => this.cameras.resize(size.width, size.height));
@@ -212,11 +217,13 @@ export class CombatScene extends Phaser.Scene {
       this.drag = undefined; this.dragAnchor = undefined; this.dragValid = undefined;
       this.pointerX = -1; this.pointerY = -1;
       this.hoverTarget = '';
+      this.hoverSoundTarget = '';
       this.nextRender = 0;
     }
     const visible = !document.hidden;
     const steps = advanceClock(this.clock, delta, visible, this.focused && !this.ui.dialogOpen && !this.startingRun);
     for (let i = 0; i < steps; i++) stepEncounter(this.ui.state, 50);
+    this.gameAudio.consume(this.ui.state, visible && this.focused && !this.ui.dialogOpen && !this.startingRun);
     this.ui.tick(); this.ui.setPaused(!visible || !this.focused);
     if (this.lastStage && this.lastStage !== this.ui.run.stage && this.lastStage !== 'opening' && !this.startingRun) this.cameras.main.flash(180, 36, 23, 25, false);
     this.lastStage = this.ui.run.stage;
@@ -232,7 +239,7 @@ export class CombatScene extends Phaser.Scene {
     this.pointerX = pointer.x; this.pointerY = pointer.y;
     const zone = this.hud.zoneAt(pointer.x, pointer.y);
     if (pointer.button === 2) {
-      if (zone?.itemId && (this.ui.state.phase === 'preparation' || this.ui.state.phase === 'result')) this.ui.rotateItem(zone.itemId);
+      if (zone?.itemId && (this.ui.state.phase === 'preparation' || this.ui.state.phase === 'result') && this.ui.rotateItem(zone.itemId)) this.gameAudio.play('ui');
       this.forceDraw();
       return;
     }
@@ -275,14 +282,17 @@ export class CombatScene extends Phaser.Scene {
         if (zone?.heroId && zone.cell !== undefined) {
           const anchor = zone.cell - drag.grabY * INVENTORY_GRID_SIZE - drag.grabX;
           const valid = canPlaceItem(this.ui.state, drag.item, zone.heroId, anchor);
-          if (valid) this.ui.dropItem(drag.item.id, zone.heroId, anchor, drag.reward);
+          if (valid && this.ui.dropItem(drag.item.id, zone.heroId, anchor, drag.reward)) this.gameAudio.play('ui');
           else this.restoreRotation(drag);
         } else if (zone?.action === 'floor-drop') {
           this.ui.dropToStash(drag.item.id);
         } else if (zone?.action === 'claim' && drag.reward) {
           this.ui.action('claim', drag.item.id);
         } else this.restoreRotation(drag);
-      } else if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) this.ui.action(zone.action, zone.value ?? '');
+      } else if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) {
+        if (zone.action !== 'wind') this.gameAudio.play('ui');
+        this.ui.action(zone.action, zone.value ?? '');
+      }
       else if (!zone?.itemId && zone?.heroId && zone.cell !== undefined) this.ui.action('cell', `${zone.heroId}:${zone.cell}`);
       this.drag = undefined; this.forceDraw(); return;
     }
@@ -293,6 +303,8 @@ export class CombatScene extends Phaser.Scene {
         this.hud.showClickNotice(pointer.x, pointer.y, 'Некому заводить');
         this.forceDraw(); return;
       }
+      if (zone.action === 'room') this.gameAudio.play('door');
+      else if (zone.action !== 'wind') this.gameAudio.play('ui');
       this.ui.action(zone.action, zone.value ?? '');
     }
     else if (!zone?.itemId && zone?.heroId && zone.cell !== undefined) this.ui.action('cell', `${zone.heroId}:${zone.cell}`);
@@ -316,7 +328,14 @@ export class CombatScene extends Phaser.Scene {
       }
     }
     const target = this.hud.updateHover(pointer.x, pointer.y);
-    if (target !== this.hoverTarget) { this.hoverTarget = target; this.forceDraw(); }
+    const zone = this.hud.zoneAt(pointer.x, pointer.y);
+    const action = zone?.action;
+    const soundTarget = zone?.itemId ? `item:${zone.itemId}`
+      : action && !['cell', 'inspect', 'wind', 'floor-drop'].includes(action) ? `action:${action}:${zone.value ?? ''}` : '';
+    const changed = target !== this.hoverTarget || soundTarget !== this.hoverSoundTarget;
+    if (soundTarget && soundTarget !== this.hoverSoundTarget && !pointer.isDown && !this.startingRun) this.gameAudio.play('hover');
+    this.hoverSoundTarget = soundTarget;
+    if (changed) { this.hoverTarget = target; this.forceDraw(); }
   }
 
   private dragAnchor?: number;
@@ -324,6 +343,7 @@ export class CombatScene extends Phaser.Scene {
 
   private beginDescent(): void {
     if (this.startingRun || this.ui.run.stage !== 'opening') return;
+    this.gameAudio.play('door');
     if (!this.sound.get('background-music')?.isPlaying) this.sound.play('background-music', { loop: true, volume: .32 });
     this.startingRun = true;
     this.drag = undefined;
