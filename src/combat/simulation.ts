@@ -1,6 +1,6 @@
 import { COMBAT_CONFIG } from './config.ts';
 import { areAdjacent, itemBonuses, moveItem } from './inventory.ts';
-import { defaultPuppetForm, getPuppetForm, getPuppetItemRules, getPuppetWindDrain, registerPuppetItemTrigger, type HeroClass, type PuppetBranch, type PuppetFormId, type PuppetPassiveState } from './puppets.ts';
+import { defaultPuppetForm, getPuppetForm, getPuppetItemRules, getPuppetWindDrain, PUPPET_RULES, registerPuppetItemTrigger, type HeroClass, type PuppetBranch, type PuppetFormId, type PuppetPassiveState } from './puppets.ts';
 
 export type ActorStatus = 'human' | 'enemy' | 'rebirthing' | 'stopped' | 'active' | 'dead';
 export type TargetPolicy = 'front' | 'lowest' | 'rear';
@@ -203,7 +203,7 @@ function rollManualWindAmount(state: EncounterState, doll: Combatant): number {
   random ^= random << 5;
   state.windRandomState = random >>> 0;
   const roll = 5 + state.windRandomState % 16;
-  return getPuppetForm(doll.puppetFormId)?.passiveId === 'penitent-winding' ? Math.round(roll * 1.5) : roll;
+  return getPuppetForm(doll.puppetFormId)?.passiveId === 'penitent-winding' ? Math.round(roll * (1 + PUPPET_RULES.penitentWindBonus)) : roll;
 }
 
 export const MAX_ARMOR = 8;
@@ -251,7 +251,7 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
     } else {
       if (form?.passiveId === 'bastion-counterwind') {
         target.puppetPassiveState.hitsTaken++;
-        if (target.puppetPassiveState.hitsTaken % 3 === 0) target.windUpCharge = Math.min(target.maxWindUp, target.windUpCharge + 12);
+        if (target.puppetPassiveState.hitsTaken % PUPPET_RULES.bastionEveryHits === 0) target.windUpCharge = Math.min(target.maxWindUp, target.windUpCharge + PUPPET_RULES.bastionWindRefund);
       }
       if (target.windUpCharge === 0) target.status = 'stopped';
       else if (target.windUpCharge >= target.maxWindUp) target.status = 'active';
@@ -367,7 +367,7 @@ function advanceEnemies(state: EncounterState, deltaMs: number): void {
     const dealt = healthBefore - (isDoll ? target.durability : target.hp);
     record(state, { kind: 'enemy', actorId: enemy.id, sourceId: enemy.id, sourceName: enemy.name, targetId: target.id, targetName: target.name, amount: dealt, message: `${enemy.name} → ${target.name}: ${dealt} урона` });
     if (dealt > 0 && target.isPuppet && getPuppetForm(target.puppetFormId)?.passiveId === 'martyr-reflection' && enemy.status === 'enemy') {
-      const reflected = Math.floor(dealt * .25);
+      const reflected = Math.floor(dealt * PUPPET_RULES.martyrReflection);
       if (reflected > 0) {
         applyEffect(state, enemy.id, 'damage', reflected);
         record(state, { kind: 'state', actorId: target.id, sourceId: target.id, sourceName: getPuppetForm(target.puppetFormId)!.name, targetId: enemy.id, targetName: enemy.name, amount: reflected, defeatedTarget: state.enemies.some(candidate => candidate.id === enemy.id && candidate.status === 'dead'), message: `${target.name} отражает ${reflected} урона` });
@@ -386,7 +386,7 @@ function applyWindingCommands(state: EncounterState): void {
     if (!winder) continue;
     const previousWind = doll.windUpCharge;
     if (getPuppetForm(doll.puppetFormId)?.passiveId === 'penitent-winding') {
-      doll.durability = Math.max(0, doll.durability - 1);
+      doll.durability = Math.max(0, doll.durability - PUPPET_RULES.penitentDurabilityCost);
       if (doll.durability === 0) {
         doll.status = 'dead'; doll.windUpCharge = 0;
         const droppedItems = dropDeadHeroItems(state, doll);
