@@ -159,6 +159,13 @@ Architecture not yet mapped. Follow existing patterns found in the codebase.
 No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/` with a `SKILL.md` index file.
 <!-- GSD:skills-end -->
 
+## Serena Language-Server Initialization
+
+- For source-code work, call `initial_instructions` once, then activate the project and await that call before requesting symbols. Do not run `activate_project` and symbol tools in parallel.
+- Project activation may finish while language-server startup is still queued. Before symbol queries, check `get_current_config` and wait until `Language server status: ready`.
+- If a Serena symbol tool reports that the language-server manager is not initialized, stop further symbol queries and report the error. If the user asks for diagnosis, inspect the referenced Serena log and current config; retry symbol queries sequentially once the server is ready.
+- The `InitializeRequestParams` / `clientInfo` warning was non-fatal in the observed startup race; the symbol query ran before asynchronous language-server initialization completed.
+
 <!-- GSD:workflow-start source:GSD defaults -->
 
 ## GSD Workflow Enforcement

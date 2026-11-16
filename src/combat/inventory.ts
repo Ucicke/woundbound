@@ -28,8 +28,8 @@ export function rotateItem(item: CombatItem): void {
   item.rotation = ((item.rotation ?? 0) + 1) % 4;
 }
 
-export function occupiedCells(item: CombatItem, cell: number): number[] | null {
-  if (!Number.isInteger(cell) || cell < 0 || cell >= INVENTORY_CELL_COUNT) return null;
+export function occupiedCells(item: CombatItem, cell: number | undefined): number[] | null {
+  if (cell === undefined || !Number.isInteger(cell) || cell < 0 || cell >= INVENTORY_CELL_COUNT) return null;
   const x = inventoryColumn(cell), y = inventoryRow(cell);
   const result: number[] = [];
   for (const [dx, dy] of rotatedShape(item)) {
@@ -42,12 +42,20 @@ export function occupiedCells(item: CombatItem, cell: number): number[] | null {
   return result.length ? result : null;
 }
 
+function overlapsExisting(items: readonly CombatItem[], cells: readonly number[], ignoredItem?: CombatItem): boolean {
+  return items.some(other => {
+    if (other === ignoredItem) return false;
+    const occupied = occupiedCells(other, other.cell);
+    return !occupied || occupied.some(index => cells.includes(index));
+  });
+}
+
 export function findPlacement(state: EncounterState, item: CombatItem, heroId: string): number | null {
   const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
   if (!hero) return null;
   for (let cell = 0; cell < INVENTORY_CELL_COUNT; cell++) {
     const occupied = occupiedCells(item, cell);
-    if (occupied && hero.items.every(other => !occupiedCells(other, other.cell ?? 0)?.some(index => occupied.includes(index)))) return cell;
+    if (occupied && !overlapsExisting(hero.items, occupied, item)) return cell;
   }
   return null;
 }
@@ -60,9 +68,8 @@ export function rotateItemInInventory(state: EncounterState, itemId: string): bo
   const previous = item.rotation ?? 0;
   rotateItem(item);
   if (owner) {
-    const cells = occupiedCells(item, item.cell ?? 0);
-    const collides = owner.items.some(other => other.id !== item.id && occupiedCells(other, other.cell ?? 0)?.some(cell => cells?.includes(cell)));
-    if (!cells || collides) { item.rotation = previous; return false; }
+    const cells = occupiedCells(item, item.cell);
+    if (!cells || overlapsExisting(owner.items, cells, item)) { item.rotation = previous; return false; }
   }
   return true;
 }
@@ -73,11 +80,7 @@ export function canPlaceItem(state: EncounterState, item: CombatItem, heroId: st
   const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
   const cells = occupiedCells(item, cell);
   if (!hero || !cells) return false;
-  return hero.items.every(other => {
-    if (other.id === item.id) return true;
-    const occupied = occupiedCells(other, other.cell ?? 0);
-    return !!occupied && !occupied.some(index => cells.includes(index));
-  });
+  return !overlapsExisting(hero.items, cells, item);
 }
 
 /** Move one real instance only after validating the complete destination. */
@@ -107,8 +110,9 @@ export function storeItem(state: EncounterState, itemId: string): boolean {
 }
 
 export function areAdjacent(a: CombatItem, b: CombatItem): boolean {
-  const left = occupiedCells(a, a.cell ?? 0) ?? [];
-  const right = occupiedCells(b, b.cell ?? 0) ?? [];
+  const left = occupiedCells(a, a.cell);
+  const right = occupiedCells(b, b.cell);
+  if (!left || !right) return false;
   return left.some(x => right.some(y => Math.abs(inventoryColumn(x) - inventoryColumn(y)) + Math.abs(inventoryRow(x) - inventoryRow(y)) === 1));
 }
 
@@ -126,7 +130,7 @@ export function synergyTargets(item: CombatItem): Array<{ tag: string; text: str
 }
 
 export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity?: ItemClassAffinity): { damage: number; cooldownFactor: number; healing: number; wind: number; descriptions: string[] } {
-  const neighbours = items.filter(other => other.id !== item.id && areAdjacent(item, other));
+  const neighbours = items.filter(other => other !== item && areAdjacent(item, other));
   const stones = item.tags?.includes('blade') ? neighbours.filter(other => other.tags?.includes('whetstone')).length : 0;
   const springs = item.tags?.includes('clockwork') ? neighbours.filter(other => other.tags?.includes('spring')).length : 0;
   const scopes = item.tags?.includes('firearm') ? neighbours.filter(other => other.tags?.includes('scope')).length : 0;
