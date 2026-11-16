@@ -204,8 +204,7 @@ export class GameUI {
     if (!item || !canPlaceItem(this.state, item, heroId, anchor)) { this.message = 'Предмет не помещается: проверьте границы и занятые клетки.'; return false; }
     const oldOwner = this.state.heroes.find(hero => hero.items.includes(item));
     const oldNeighbors = new Set(oldOwner?.id === heroId ? oldOwner.items.filter(other => other !== item && areAdjacent(item, other)).map(other => other.id) : []);
-    if (reward && !claimReward(this.run, itemId)) return false;
-    if (!moveItem(this.state, itemId, heroId, anchor)) return false;
+    if (reward ? !claimReward(this.run, itemId, { heroId, cell: anchor }) : !moveItem(this.state, itemId, heroId, anchor)) return false;
     this.dialogue.onPlacement(item, heroId, oldNeighbors, this.state, performance.now());
     this.selectedItem = null; this.message = 'Предмет размещён'; return true;
   }
@@ -246,13 +245,13 @@ export class GameUI {
       this.startLoadoutMenuOpen = false;
     }
     else if (name === 'begin-run') {
-      if (beginRun(this.run) && startBattle(this.state)) { this.selectedItem = null; this.message = ''; this.startLoadoutMenuOpen = false; }
+      if (beginRun(this.run)) { this.selectedItem = null; this.message = ''; this.startLoadoutMenuOpen = false; }
     }
     else if (name === 'route') { if (openRoute(this.run)) { this.selectedItem = null; this.message = ''; } }
     else if (name === 'room') {
       if (enterRoom(this.run, value)) {
         this.selectedItem = null; this.message = '';
-        if (this.run.stage === 'battle') { this.prepareFastEncounter(); startBattle(this.state); }
+        if (this.run.stage === 'battle') this.prepareFastEncounter();
       }
     } else if (name === 'claim') { if (claimReward(this.run, value)) this.message = 'Предмет лежит на полу'; }
     else if (name === 'workshop-wind') { if (windWorkshop(this.run)) this.message = 'Завод восстановлен; прочность не изменилась'; }

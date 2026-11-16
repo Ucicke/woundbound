@@ -1,13 +1,35 @@
 import { createItem, EXPANSION_ITEM_IDS, itemDefinitionIds } from './items.ts';
-import { createActor, type CombatItem, type Combatant, type EncounterState } from './simulation.ts';
+import { createActor, startBattle, type CombatItem, type Combatant, type EncounterState } from './simulation.ts';
 import { COMBAT_CONFIG } from './config.ts';
+import { canPlaceItem } from './inventory.ts';
+
+export const RUN_ROOM_COUNT = 10;
 
 export type RoomKind = 'battle' | 'cache' | 'workshop' | 'event' | 'boss';
 export type RunStage = 'opening' | 'battle' | 'reward' | 'cleared' | 'route' | 'cache' | 'workshop' | 'event' | 'victory' | 'defeat';
 export interface RoomChoice { id: string; kind: RoomKind; label: string; variant?: number }
-export interface RunState {
-  encounter: EncounterState; room: number; stage: RunStage; current: RoomKind; roomLabel: string;
-  offers: CombatItem[]; rewardClaimed: boolean; workshopCalmed: boolean; random: () => number;
+type Offers = [CombatItem, CombatItem, CombatItem];
+type RunProgress = { roomLabel: string } & (
+  | { stage: 'opening'; current: 'battle' }
+  | { stage: 'battle' | 'defeat'; current: 'battle' | 'boss' }
+  | { stage: 'reward'; current: 'battle'; offers: Offers }
+  | { stage: 'cache'; current: 'cache'; offers: Offers }
+  | { stage: 'workshop'; current: 'workshop'; workshopCalmed: boolean }
+  | { stage: 'event'; current: 'event' }
+  | { stage: 'victory'; current: 'boss' }
+  | { stage: 'cleared' | 'route'; current: RoomKind }
+);
+
+export class RunState {
+  room = 1;
+  private progress: RunProgress = { stage: 'opening', current: 'battle', roomLabel: 'Крысиные катакомбы' };
+  constructor(public encounter: EncounterState, public random: () => number) {}
+  get stage(): RunStage { return this.progress.stage; }
+  get current(): RoomKind { return this.progress.current; }
+  get roomLabel(): string { return this.progress.roomLabel; }
+  get offers(): readonly CombatItem[] { return 'offers' in this.progress ? this.progress.offers : []; }
+  get workshopCalmed(): boolean { return this.progress.stage === 'workshop' && this.progress.workshopCalmed; }
+  transition(progress: RunProgress): void { this.progress = progress; }
 }
 
 function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
@@ -49,41 +71,55 @@ function setEnemies(encounter: EncounterState, enemies: Combatant[]): void {
 /** The opening encounter is room one; all party and inventory objects remain owned by the encounter. */
 export function createRun(encounter: EncounterState, random: () => number = Math.random): RunState {
   setEnemies(encounter, enemiesFor(1, 0));
-  return { encounter, room: 1, stage: 'opening', current: 'battle', roomLabel: 'Крысиные катакомбы', offers: [], rewardClaimed: false, workshopCalmed: false, random };
+  return new RunState(encounter, random);
 }
 
 /** Opens the first named encounter exactly once; later rooms use enterRoom directly. */
 export function beginRun(run: RunState): boolean {
   if (run.stage !== 'opening' || run.encounter.phase !== 'preparation') return false;
-  run.stage = 'battle';
+  if (!startBattle(run.encounter)) return false;
+  run.transition({ stage: 'battle', current: 'battle', roomLabel: run.roomLabel });
   return true;
 }
 
 export function syncRun(run: RunState): void {
   if (run.stage !== 'battle' || run.encounter.outcome === 'ongoing') return;
-  if (run.encounter.outcome === 'defeat') run.stage = 'defeat';
-  else if (run.current === 'boss') run.stage = 'victory';
-  else { makeOffers(run); run.stage = 'reward'; }
+  if (run.current !== 'battle' && run.current !== 'boss') throw new Error('Invalid battle room');
+  if (run.encounter.outcome === 'defeat') run.transition({ stage: 'defeat', current: run.current, roomLabel: run.roomLabel });
+  else if (run.current === 'boss') run.transition({ stage: 'victory', current: 'boss', roomLabel: run.roomLabel });
+  else run.transition({ stage: 'reward', current: 'battle', roomLabel: run.roomLabel, offers: makeOffers(run.room, run.random) });
 }
 
-function makeOffers(run: RunState): void {
-  const ids = [...itemDefinitionIds()];
-  const expansionIds = [...EXPANSION_ITEM_IDS];
-  run.offers = [];
-  for (let index = 0; index < 3; index++) {
-    const roll = Math.max(0, Math.min(0.999999, run.random()));
-    const pool = index === 0 ? expansionIds : ids;
-    const [id] = pool.splice(Math.floor(roll * pool.length), 1);
-    if (index === 0) ids.splice(ids.indexOf(id!), 1);
-    run.offers.push(createItem(id!, `reward-${run.room}-${index}`, run.random));
+function makeOffers(room: number, random: () => number): Offers {
+  const ids = [...new Set(itemDefinitionIds())];
+  const expansionIds = [...new Set(EXPANSION_ITEM_IDS)];
+  if (ids.length < 3 || expansionIds.length === 0 || expansionIds.some(id => !ids.includes(id))) {
+    throw new Error('Reward catalog must contain at least three distinct items and valid expansion items');
   }
+  const offers: CombatItem[] = [];
+  const checkedRandom = (): number => {
+    const value = random();
+    if (!Number.isFinite(value) || value < 0 || value >= 1) throw new Error('Reward RNG must return a finite number in [0, 1)');
+    return value;
+  };
+  for (let index = 0; index < 3; index++) {
+    const roll = checkedRandom();
+    const pool = index === 0 ? expansionIds : ids;
+    const id = pool[Math.floor(roll * pool.length)];
+    if (id === undefined) throw new Error('Reward catalog was exhausted');
+    ids.splice(ids.indexOf(id), 1);
+    offers.push(createItem(id, `reward-${room}-${index}`, checkedRandom));
+  }
+  const [first, second, third] = offers;
+  if (!first || !second || !third) throw new Error('Reward catalog did not produce three items');
+  return [first, second, third];
 }
 
 export function nextRoomChoices(run: RunState): RoomChoice[] {
   if (run.stage !== 'route') return [];
   const next = run.room + 1;
-  if (next === 10) return [{ id: 'boss', kind: 'boss', label: 'Трон Последнего Архонта' }];
-  if (next > 10) return [];
+  if (next === RUN_ROOM_COUNT) return [{ id: 'boss', kind: 'boss', label: 'Трон Последнего Архонта' }];
+  if (next > RUN_ROOM_COUNT) return [];
   const position = (next - 1) % 3;
   if (position === 0) return [
     { id: 'battle-0', kind: 'battle', label: 'Крысиные катакомбы', variant: 0 },
@@ -100,31 +136,42 @@ export function nextRoomChoices(run: RunState): RoomChoice[] {
 export function openRoute(run: RunState): boolean {
   syncRun(run);
   if (run.stage !== 'cleared') return false;
-  run.stage = 'route'; return true;
+  run.transition({ stage: 'route', current: run.current, roomLabel: run.roomLabel }); return true;
 }
 
 export function enterRoom(run: RunState, choiceId: string): boolean {
   const choice = nextRoomChoices(run).find(candidate => candidate.id === choiceId);
   if (!choice) return false;
+  const room = run.room + 1;
+  const enemies = choice.kind === 'battle' || choice.kind === 'boss' ? enemiesFor(room, choice.variant ?? 0, choice.kind === 'boss') : undefined;
+  const progress: RunProgress = choice.kind === 'battle' || choice.kind === 'boss'
+    ? { stage: 'battle', current: choice.kind, roomLabel: choice.label }
+    : choice.kind === 'cache'
+      ? { stage: 'cache', current: 'cache', roomLabel: choice.label, offers: makeOffers(room, run.random) }
+      : choice.kind === 'event'
+        ? { stage: 'event', current: 'event', roomLabel: choice.label }
+        : { stage: 'workshop', current: 'workshop', roomLabel: choice.label, workshopCalmed: false };
   run.encounter.floor.length = 0;
   run.encounter.stash.length = 0;
-  run.room++; run.current = choice.kind; run.roomLabel = choice.label; run.rewardClaimed = false; run.workshopCalmed = false; run.offers = [];
+  run.room = room;
   run.encounter.phase = 'preparation'; run.encounter.outcome = 'ongoing'; run.encounter.commands.length = 0;
-  if (choice.kind === 'battle' || choice.kind === 'boss') {
-    setEnemies(run.encounter, enemiesFor(run.room, choice.variant ?? 0, choice.kind === 'boss'));
-    run.stage = 'battle';
-  } else if (choice.kind === 'cache') {
-    makeOffers(run);
-    run.stage = 'cache';
-  } else run.stage = choice.kind === 'event' ? 'event' : 'workshop';
+  if (enemies) {
+    setEnemies(run.encounter, enemies);
+    startBattle(run.encounter);
+  }
+  run.transition(progress);
   return true;
 }
 
-export function claimReward(run: RunState, itemId: string): boolean {
-  if ((run.stage !== 'cache' && run.stage !== 'reward') || run.rewardClaimed) return false;
+export function claimReward(run: RunState, itemId: string, destination?: { heroId: string; cell: number }): boolean {
+  if (run.stage !== 'cache' && run.stage !== 'reward') return false;
   const item = run.offers.find(candidate => candidate.id === itemId);
   if (!item) return false;
-  run.encounter.floor.push(item); run.offers = []; run.rewardClaimed = true; run.stage = 'cleared';
+  const hero = destination && run.encounter.heroes.find(candidate => candidate.id === destination.heroId);
+  if (destination && (!hero || !canPlaceItem(run.encounter, item, destination.heroId, destination.cell))) return false;
+  if (destination && hero) { item.cell = destination.cell; hero.items.push(item); }
+  else run.encounter.floor.push(item);
+  run.transition({ stage: 'cleared', current: run.current, roomLabel: run.roomLabel });
   return true;
 }
 
@@ -141,12 +188,13 @@ export function calmWorkshopItem(run: RunState, itemId: string): boolean {
   if (run.stage !== 'workshop' || run.workshopCalmed) return false;
   const item = [...run.encounter.stash, ...run.encounter.floor, ...run.encounter.heroes.flatMap(hero => hero.items)].find(candidate => candidate.id === itemId);
   if (!item || item.definitionId !== 'lantern' || item.calmed) return false;
-  item.calmed = true; run.workshopCalmed = true; return true;
+  item.calmed = true;
+  run.transition({ stage: 'workshop', current: 'workshop', roomLabel: run.roomLabel, workshopCalmed: true }); return true;
 }
 
 export function leaveWorkshop(run: RunState): boolean {
   if (run.stage !== 'workshop') return false;
-  run.stage = 'cleared'; return true;
+  run.transition({ stage: 'cleared', current: 'workshop', roomLabel: run.roomLabel }); return true;
 }
 
 /** The infirmary offers one mutually exclusive benefit, once per visit. */
@@ -156,5 +204,5 @@ export function resolveInfirmary(run: RunState, choice: string): boolean {
     if (choice === 'heal' && hero.status === 'human') hero.hp = Math.min(hero.maxHp, hero.hp + 15);
     if (choice === 'repair' && (hero.status === 'stopped' || hero.status === 'active')) hero.durability = Math.min(hero.maxDurability, hero.durability + 15);
   }
-  run.stage = 'cleared'; return true;
+  run.transition({ stage: 'cleared', current: 'event', roomLabel: run.roomLabel }); return true;
 }

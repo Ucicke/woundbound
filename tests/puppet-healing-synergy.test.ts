@@ -34,7 +34,7 @@ describe('puppet repair and inventory synergies', () => {
 
   it('restarts directly into combat from defeat', () => {
     const ui = new GameUI();
-    ui.run.stage = 'defeat'; ui.state.outcome = 'defeat'; ui.state.phase = 'result';
+    ui.run.transition({ stage: 'defeat', current: 'battle', roomLabel: ui.run.roomLabel }); ui.state.outcome = 'defeat'; ui.state.phase = 'result';
     ui.action('restart');
     expect(ui.confirmReset).toBe(false);
     expect(ui.run.stage).toBe('battle');

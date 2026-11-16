@@ -1,4 +1,5 @@
 import type Phaser from 'phaser';
+import { RUN_ROOM_COUNT } from '../combat/run.ts';
 import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape, synergyTargets, SYNERGY_TAG_LABELS } from '../combat/inventory.ts';
 import { attributeModifier, chooseHeroTarget, heroArmor, heroClassForActor, MAX_ARMOR, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { ITEM_CLASS_LABELS } from '../combat/items.ts';
@@ -365,7 +366,7 @@ export class PhaserHUD {
   }
 
   private header(): void {
-    const stageName = this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ 1 · СПУСК ${this.ui.run.room}/10`;
+    const stageName = this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ 1 · СПУСК ${this.ui.run.room}/${RUN_ROOM_COUNT}`;
     if (this.ui.run.stage !== 'opening' && this.ui.run.stage !== 'victory') {
       const available = Math.max(40, this.width - 2 * (162 + this.left.x));
       const panelW = Math.min(420, this.width * .57, available);

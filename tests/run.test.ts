@@ -8,7 +8,7 @@ import { applyEffect, prepareEncounter, queueWinding, startBattle, stepEncounter
 
 function victory(run: ReturnType<typeof createRun>) {
   if (run.stage === 'opening') expect(beginRun(run)).toBe(true);
-  expect(startBattle(run.encounter)).toBe(true);
+  expect(run.encounter.phase).toBe('combat');
   run.encounter.enemies.forEach(enemy => applyEffect(run.encounter, enemy.id, 'damage', enemy.maxHp));
   syncRun(run);
   if (run.stage === 'reward') {
@@ -24,7 +24,7 @@ describe('complete run', () => {
   it('guarantees the first post-battle reward contains a new playstyle item', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
     const run = createRun(encounter, () => 0);
-    expect(beginRun(run)).toBe(true); expect(startBattle(encounter)).toBe(true);
+    expect(beginRun(run)).toBe(true); expect(encounter.phase).toBe('combat');
     encounter.enemies.forEach(enemy => applyEffect(encounter, enemy.id, 'damage', enemy.maxHp));
     syncRun(run);
     expect(run.stage).toBe('reward');
@@ -49,11 +49,11 @@ describe('complete run', () => {
   it('matches named combat rooms to their actual enemy types', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
     const run = createRun(encounter); expect(beginRun(run)).toBe(true);
-    run.room = 3; run.stage = 'route';
+    run.room = 3; run.transition({ stage: 'route', current: run.current, roomLabel: run.roomLabel });
     expect(nextRoomChoices(run).find(choice => choice.id === 'battle-1')?.label).toBe('Капище культистов');
     expect(enterRoom(run, 'battle-1')).toBe(true);
     expect(encounter.enemies.every(enemy => enemy.name === 'Культист')).toBe(true);
-    run.room = 6; run.stage = 'route';
+    run.room = 6; run.transition({ stage: 'route', current: run.current, roomLabel: run.roomLabel });
     expect(nextRoomChoices(run).find(choice => choice.id === 'battle-1')?.label).toBe('Литейная автоматонов');
     expect(enterRoom(run, 'battle-1')).toBe(true);
     expect(encounter.enemies.every(enemy => enemy.name === 'Сломанный автоматон')).toBe(true);
@@ -87,7 +87,7 @@ describe('complete run', () => {
       expect(hero.durability).toBe(42); expect(hero.items).toContain(lantern);
       if (room < 10) expect(encounter.enemies.length).toBeGreaterThanOrEqual(2);
       if (room === 10) {
-        expect(startBattle(encounter)).toBe(true);
+        expect(encounter.phase).toBe('combat');
         const [boss, guard] = encounter.enemies;
         expect(boss.isBoss).toBe(true);
         expect(applyEffect(encounter, boss.id, 'damage', boss.maxHp)).toBe(true);
@@ -103,7 +103,7 @@ describe('complete run', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
     const run = createRun(encounter); expect(beginRun(run)).toBe(true);
     encounter.heroes.forEach(hero => { hero.status = 'stopped'; hero.durability = 1; hero.windUpCharge = 0; });
-    expect(startBattle(encounter)).toBe(true);
+    expect(encounter.phase).toBe('combat');
     stepEncounter(encounter, 50);
     syncRun(run); expect(run.stage).toBe('battle'); expect(openRoute(run)).toBe(false);
     expect(encounter.heroes.every(hero => hero.status === 'stopped')).toBe(true);
@@ -119,7 +119,7 @@ describe('complete run', () => {
     fallen.status = 'active'; fallen.durability = 1; fallen.windUpCharge = 10;
     rebirthing.status = 'rebirthing'; rebirthing.rebirthMs = 1250;
     encounter.heroes[0].hp = 37;
-    expect(startBattle(encounter)).toBe(true);
+    expect(encounter.phase).toBe('combat');
     applyEffect(encounter, fallen.id, 'damage', 1);
     encounter.enemies.forEach(enemy => applyEffect(encounter, enemy.id, 'damage', enemy.maxHp));
     syncRun(run);
@@ -130,7 +130,7 @@ describe('complete run', () => {
     expect(encounter.heroes[1]).toBe(fallen); expect(fallen.status).toBe('dead');
     expect(encounter.floor).not.toContain(dropped);
     expect(rebirthing.status).toBe('rebirthing'); expect(rebirthing.rebirthMs).toBe(1250);
-    expect(encounter.heroes[0].hp).toBe(37); expect(encounter.phase).toBe('preparation');
+    expect(encounter.heroes[0].hp).toBe(37); expect(encounter.phase).toBe('combat');
   });
 
   it('allows exactly one infirmary choice and never repairs a permanently dead doll', () => {
@@ -150,7 +150,7 @@ describe('complete run', () => {
 
   it('infirmary healing affects living humans only and never exceeds maximum health', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
-    const run = createRun(encounter); run.stage = 'event'; run.current = 'event';
+    const run = createRun(encounter); run.transition({ stage: 'event', current: 'event', roomLabel: 'Лазарет' });
     const human = encounter.heroes[0], doll = encounter.heroes[1], dead = encounter.heroes[2];
     human.hp = human.maxHp - 5; doll.status = 'stopped'; doll.hp = 0; dead.status = 'dead'; dead.hp = 0;
     expect(resolveInfirmary(run, 'heal')).toBe(true);
@@ -159,11 +159,12 @@ describe('complete run', () => {
 
   it('can win a normal-number route using rewards, workshops and manual winding', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
-    const run = createRun(encounter, () => 0); expect(beginRun(run)).toBe(true);
+    const run = createRun(encounter, () => 0);
     expect(moveItem(encounter, 'item-1', 'hero-1', 0)).toBe(true);
     expect(swapHeroPositions(encounter, 1, 2)).toBe(true);
+    expect(beginRun(run)).toBe(true);
     const fight = () => {
-      expect(startBattle(encounter)).toBe(true);
+      expect(encounter.phase).toBe('combat');
       for (let tick = 0; tick < 6000 && encounter.outcome === 'ongoing'; tick++) {
         for (const hero of encounter.heroes) if (hero.status === 'stopped') for (let click = 0; click < 20; click++) queueWinding(encounter, hero.id);
         stepEncounter(encounter, 50);

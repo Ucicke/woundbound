@@ -17,7 +17,7 @@ describe('run balance simulation', () => {
     const state = createFullEncounter({ random: () => 0.25 });
     prepareEncounter(state);
     const run = createRun(state, () => 0.25);
-    run.stage = 'route';
+    run.transition({ stage: 'route', current: run.current, roomLabel: run.roomLabel });
     let previousHealth = 0;
     let previousRoomHealth = 0;
     let previousDamage = 0;
@@ -26,7 +26,7 @@ describe('run balance simulation', () => {
     for (let room = 1; room <= 9; room++) {
       if (room > 1) {
         run.room = room - 1;
-        run.stage = 'route';
+        run.transition({ stage: 'route', current: run.current, roomLabel: run.roomLabel });
         expect(enterRoom(run, 'battle-0')).toBe(true);
       }
       const first = state.enemies[0]!;
@@ -42,7 +42,7 @@ describe('run balance simulation', () => {
     }
 
     run.room = 9;
-    run.stage = 'route';
+    run.transition({ stage: 'route', current: run.current, roomLabel: run.roomLabel });
     expect(enterRoom(run, 'boss')).toBe(true);
     expect(state.enemies[0]!.isBoss).toBe(true);
     expect(state.enemies[0]!.maxHp).toBeGreaterThan(previousHealth * 2);

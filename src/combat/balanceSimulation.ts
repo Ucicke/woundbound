@@ -1,8 +1,8 @@
 import { createFullEncounter } from './encounter.ts';
 import { COMBAT_CONFIG } from './config.ts';
 import { areAdjacent, canPlaceItem, itemBonuses, moveItem, storeItem } from './inventory.ts';
-import { createRun, beginRun, calmWorkshopItem, claimReward, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop } from './run.ts';
-import { heroClassForActor, MAX_ARMOR, prepareEncounter, queueWinding, startBattle, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
+import { RUN_ROOM_COUNT, createRun, beginRun, calmWorkshopItem, claimReward, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop } from './run.ts';
+import { heroClassForActor, MAX_ARMOR, prepareEncounter, queueWinding, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
 
 export type BalanceAgent = 'random' | 'synergy' | 'balanced';
 export type BalanceOutcome = 'victory' | 'defeat' | 'timeout';
@@ -224,7 +224,7 @@ function placeRandomly(state: EncounterState, item: CombatItem, random: () => nu
   return false;
 }
 
-function chooseReward(state: EncounterState, offers: CombatItem[], agent: BalanceAgent, random: () => number): CombatItem {
+function chooseReward(state: EncounterState, offers: readonly CombatItem[], agent: BalanceAgent, random: () => number): CombatItem {
   if (agent === 'random') return offers[Math.floor(random() * offers.length)]!;
   if (agent === 'balanced') {
     const ranked = [...offers].sort((a, b) => singleItemValue(b) - singleItemValue(a));
@@ -290,7 +290,7 @@ function windMostUrgentDoll(state: EncounterState): void {
 }
 
 function simulateBattle(state: EncounterState): BattleResult {
-  if (!startBattle(state)) return { outcome: 'timeout', elapsedMs: 0 };
+  if (state.phase !== 'combat' || state.outcome !== 'ongoing') return { outcome: 'timeout', elapsedMs: 0 };
   let elapsedMs = 0;
   let nextClickAt = 0;
   while (elapsedMs < MAX_BATTLE_MS && state.outcome === 'ongoing') {
@@ -316,7 +316,7 @@ export function simulateBalanceRun(agent: BalanceAgent, seed: number): BalanceRu
   let durationSeconds = 0;
   beginRun(run);
 
-  for (let room = 1; room <= 10; room++) {
+  for (let room = 1; room <= RUN_ROOM_COUNT; room++) {
     let roomKind: BalanceRoomResult['kind'] = 'battle';
     if (room > 1) {
       if (!openRoute(run)) break;
