@@ -22,6 +22,12 @@ Woundbound — готический автобаттлер с менеджмен
 - Render all visible gameplay and game interaction in Phaser Canvas (or raw Canvas 2D when explicitly chosen). Do not build gameplay UI, inventory, battle scenes, dialogs, or controls with HTML/DOM elements. HTML is only the empty browser mount shell; no DOM overlay.
 - Phaser owns rendering, pointer/touch input, keyboard input, scenes, and presentation timing. Keep simulation rules in pure TypeScript modules.
 
+## Game Versioning
+
+- Before publishing each playable update, increment the version in `package.json` and the root package entries in `package-lock.json`. Use npm's three-part semantic version format.
+- Update `GAME_VERSION` in `src/version.ts` in the same change. Its first three components must match the package version; the fourth is a build component, initially `0`. The player-facing version always has four components.
+- Do not increase the version for documentation-only or other changes that do not produce a playable update.
+
 ## Generated Item Sprite Cutouts
 
 - Request true transparent backgrounds for generated item sprites. If the generator cannot return reliable alpha, use a flat saturated chroma background (magenta or acid green), never a baked checkerboard or pale grey/white background.
