@@ -2,14 +2,25 @@ import { createActor, createState, type EncounterState } from './simulation.ts';
 import { createItem, ITEM_CLASS_GROUPS } from './items.ts';
 import { findPlacement } from './inventory.ts';
 import { COMBAT_CONFIG } from './config.ts';
-import { choosePuppetForm } from './puppets.ts';
+import { choosePuppetForm, type HeroClass } from './puppets.ts';
 
-const starterLoadouts = [
-  { classId: 'guard', core: ['blade', 'graveward-buckler'] },
-  { classId: 'huntress', core: ['hunter-bow', 'hunter-quiver'] },
-  { classId: 'pilgrim', core: ['ashen-censer', 'leather-prayerbook'] },
-  { classId: 'clockmaker', core: ['lantern', 'clockmaker-pendulum'] },
-] as const;
+const starterLoadouts: Record<HeroClass, { name: string; initial: readonly string[]; core: readonly string[] }> = {
+  guard: { name: 'Страж', initial: ['blade', 'whetstone', 'graveward-buckler'], core: ['blade', 'graveward-buckler'] },
+  huntress: { name: 'Охотница', initial: ['hunter-bow', 'glass-eye', 'dagger'], core: ['hunter-bow', 'hunter-quiver'] },
+  pilgrim: { name: 'Паломник', initial: ['desperate', 'ashen-censer'], core: ['ashen-censer', 'leather-prayerbook'] },
+  clockmaker: { name: 'Часовщица', initial: ['lantern', 'spring', 'mercy'], core: ['lantern', 'clockmaker-pendulum'] },
+};
+const partyClasses: readonly HeroClass[] = ['guard', 'huntress', 'pilgrim', 'clockmaker'];
+
+function validatedRandom(source: () => number): () => number {
+  return () => {
+    const value = source();
+    if (!Number.isFinite(value) || value < 0 || value >= 1) {
+      throw new RangeError(`Random source must return a finite number in [0, 1); received ${value}`);
+    }
+    return value;
+  };
+}
 
 function addPackedItem(state: EncounterState, hero: EncounterState['heroes'][number], item: ReturnType<typeof createItem>, random: () => number): boolean {
   const previousRotation = item.rotation;
@@ -31,34 +42,51 @@ function addPackedItem(state: EncounterState, hero: EncounterState['heroes'][num
 
 function generateStarterInventory(state: EncounterState, random: () => number): void {
   for (const [slot, hero] of state.heroes.entries()) {
-    const loadout = starterLoadouts[slot]!;
+    const heroClass = hero.heroClass;
+    if (!heroClass) throw new Error(`Cannot generate starter inventory for hero without a class: ${hero.id}`);
+    const loadout = starterLoadouts[heroClass];
     hero.items.length = 0;
     const selected: string[] = [...loadout.core];
     const coreItems = new Set<string>(loadout.core);
-    const pool = ITEM_CLASS_GROUPS[loadout.classId].filter(definitionId => !coreItems.has(definitionId));
+    const pool = ITEM_CLASS_GROUPS[heroClass].filter(definitionId => !coreItems.has(definitionId));
     while (selected.length < 10 && pool.length) {
       const index = Math.floor(random() * pool.length);
       selected.push(pool.splice(index, 1)[0]!);
     }
 
+    if (selected.length < 10) throw new Error(`Class ${heroClass} does not have enough items for a full starter inventory`);
     const first = createItem(selected[0]!, `item-${slot + 1}`, random);
     first.cell = 0;
     hero.items.push(first);
     const remaining = selected.slice(1).map((definitionId, index) =>
       createItem(definitionId, `starter-${hero.id}-${index + 1}`, random));
     remaining.sort((a, b) => (b.shape?.length ?? 1) - (a.shape?.length ?? 1));
-      for (const item of remaining) addPackedItem(state, hero, item, random);
+    let replacementIndex = 0;
+    for (const item of remaining) {
+      if (addPackedItem(state, hero, item, random)) continue;
+      if (item.definitionId && loadout.core.includes(item.definitionId)) {
+        throw new Error(`Could not fit core item ${item.name} in ${loadout.name}'s full starter inventory`);
+      }
+
+      let replaced = false;
+      while (pool.length && !replaced) {
+        const index = Math.floor(random() * pool.length);
+        const [definitionId] = pool.splice(index, 1);
+        const replacement = createItem(definitionId!, `starter-${hero.id}-replacement-${++replacementIndex}`, random);
+        replaced = addPackedItem(state, hero, replacement, random);
+      }
+      if (!replaced) throw new Error(`Could not fit ten items in ${loadout.name}'s full starter inventory`);
+    }
   }
 }
 
 export function createFullEncounter(options: { fullStartingInventory?: boolean; random?: () => number } = {}): EncounterState {
-  const random = options.random ?? Math.random;
-  const heroNames = ['Страж', 'Охотница', 'Паломник', 'Часовщица'];
-  const itemTypes = ['blade', 'hunter-bow', 'desperate', 'lantern'];
-  const heroes = heroNames.map((name, slot) => {
-    const hero = createActor(`hero-${slot + 1}`, name, 'hero', slot, COMBAT_CONFIG.humanHealth);
-    hero.pendingPuppetFormId = choosePuppetForm(hero.heroClass!, random).id;
-    hero.items.push(createItem(itemTypes[slot]!, `item-${slot + 1}`, random));
+  const random = validatedRandom(options.random ?? Math.random);
+  const heroes = partyClasses.map((heroClass, slot) => {
+    const loadout = starterLoadouts[heroClass];
+    const hero = createActor(`hero-${slot + 1}`, loadout.name, 'hero', slot, COMBAT_CONFIG.humanHealth);
+    hero.pendingPuppetFormId = choosePuppetForm(heroClass, random).id;
+    hero.items.push(createItem(loadout.initial[0]!, `item-${slot + 1}`, random));
     return hero;
   });
   const enemies = ['Чумная крыса', 'Культист', 'Чумная крыса', 'Культист'].map((name, slot) => {
@@ -70,17 +98,18 @@ export function createFullEncounter(options: { fullStartingInventory?: boolean; 
     return enemy;
   });
   const state = createState(heroes, enemies, Math.floor(random() * 0x1_0000_0000));
-  const extraItems = [
-    ['whetstone', 'graveward-buckler'],
-    ['glass-eye', 'dagger'],
-    ['ashen-censer'],
-    ['spring', 'mercy'],
-  ];
-  heroes.forEach((hero, index) => extraItems[index]!.forEach((id, slot) => {
-    const item = createItem(id, `initial-${hero.id}-${slot}`, random);
-    const cell = findPlacement(state, item, hero.id);
-    if (cell !== null) { item.cell = cell; hero.items.push(item); }
-  }));
+  heroes.forEach(hero => {
+    const heroClass = hero.heroClass;
+    if (!heroClass) throw new Error(`Cannot place starting items for hero without a class: ${hero.id}`);
+    const loadout = starterLoadouts[heroClass];
+    loadout.initial.slice(1).forEach((id, slot) => {
+      const item = createItem(id, `initial-${hero.id}-${slot}`, random);
+      const cell = findPlacement(state, item, hero.id);
+      if (cell === null) throw new Error(`Could not fit ${item.name} in ${loadout.name}'s starting inventory`);
+      item.cell = cell;
+      hero.items.push(item);
+    });
+  });
   if (options.fullStartingInventory) generateStarterInventory(state, random);
   return state;
 }
