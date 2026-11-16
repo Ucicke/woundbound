@@ -6,6 +6,7 @@ import { GameUI } from '../ui/GameUI.ts';
 import { PhaserHUD, type DragPreview, type UIZone } from '../ui/PhaserHUD.ts';
 import { GameAudio } from '../presentation/GameAudio.ts';
 import type { AudioChannel } from '../presentation/AudioSettings.ts';
+import { assetUrl } from '../presentation/assetUrl.ts';
 
 interface CanvasDrag {
   item: CombatItem; previewItem: CombatItem; pointerId: number; reward: boolean;
@@ -21,6 +22,8 @@ export class CombatScene extends Phaser.Scene {
   private clock: CombatClock = { accumulator: 0 };
   private focused = true;
   private startingRun = false;
+  private battleAssetsReady = false;
+  private battleLoadFailed = false;
   private drag?: CanvasDrag;
   private pointerX = 0;
   private pointerY = 0;
@@ -37,7 +40,19 @@ export class CombatScene extends Phaser.Scene {
   constructor() { super('combat'); }
 
   preload(): void {
-    const asset = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
+    const asset = assetUrl;
+    this.load.image('ui-button-plate', asset('/assets/ui/gothic-button-plate.png'));
+    this.load.image('ui-tooltip-frame', asset('/assets/ui/gothic-tooltip-frame.png'));
+    this.load.image('ui-panel-nine-slice', asset('/assets/ui/gothic-panel-nine-slice.png'));
+    this.load.image('ui-descent-button', asset('/assets/ui/descent-button.png'));
+    const opening = this.scale.height > this.scale.width ? 'portrait' : 'desktop';
+    this.load.image(`ui-opening-${opening}`, asset(`/assets/ui/opening-${opening}-refined.png`));
+    this.load.image('ui-woundbound-logo', asset('/assets/ui/woundbound-logo-refined.png'));
+    GameAudio.preload(this, asset);
+  }
+
+  private loadBattleAssets(): void {
+    const asset = assetUrl;
     for (const classId of Object.keys(CLASS_ITEM_ATLAS_TEXTURES) as Array<keyof typeof CLASS_ITEM_ATLAS_TEXTURES>) {
       this.load.spritesheet(CLASS_ITEM_ATLAS_TEXTURES[classId], asset(CLASS_ITEM_ATLAS_URLS[classId]), { frameWidth: ITEM_ATLAS_FRAME_SIZE, frameHeight: ITEM_ATLAS_FRAME_SIZE });
     }
@@ -49,8 +64,6 @@ export class CombatScene extends Phaser.Scene {
     for (const [classId, file] of Object.entries(dashboardAssets)) this.load.image(`ui-dashboard-${classId}`, asset(`/assets/ui/${file}`));
     this.load.image('ui-tube-single', asset('/assets/ui/clockmaker-tube-single.png'));
     this.load.image('ui-tube-double', asset('/assets/ui/clockmaker-tube-double.png'));
-    this.load.image('ui-button-plate', asset('/assets/ui/gothic-button-plate.png'));
-    this.load.image('ui-tooltip-frame', asset('/assets/ui/gothic-tooltip-frame.png'));
     this.load.spritesheet('puppet-deaths', asset(PUPPET_DEATH_ATLAS_URL), { frameWidth: PUPPET_DEATH_FRAME_SIZE, frameHeight: PUPPET_DEATH_FRAME_SIZE });
     for (const classId of ['guard', 'huntress', 'pilgrim', 'clockmaker']) {
       this.load.image(`dead-portrait-${classId}`, asset(`/assets/ui/dead-portrait-${classId}.png`));
@@ -59,25 +72,20 @@ export class CombatScene extends Phaser.Scene {
     this.load.spritesheet('actor-states', asset(ACTOR_STATES_ATLAS_URL), { frameWidth: ACTOR_STATE_FRAME_SIZE, frameHeight: ACTOR_STATE_FRAME_SIZE });
     this.load.spritesheet('doll-stopped', asset(DOLL_STOPPED_ATLAS_URL), { frameWidth: DOLL_STOPPED_FRAME_SIZE, frameHeight: DOLL_STOPPED_FRAME_SIZE });
     this.load.image('battlefield', asset('/assets/battlefield-gothic.png'));
-    this.load.image('location-cave', asset('/assets/location-cave.png'));
-    this.load.image('location-cult-base', asset('/assets/location-cult-base.png'));
-    this.load.image('location-clockwork-foundry', asset('/assets/location-clockwork-foundry.png'));
     this.load.image('location-rat-catacombs', asset('/assets/location-rat-catacombs.png'));
     this.load.image('ui-frame-corner', asset('/assets/ui/gothic-frame-corner.png'));
     this.load.image('ui-inventory-texture', asset('/assets/ui/inventory-plum-texture.png'));
-    this.load.image('ui-descent-button', asset('/assets/ui/descent-button.png'));
-    this.load.image('ui-opening-desktop', asset('/assets/ui/opening-desktop.png'));
-    this.load.image('ui-opening-portrait', asset('/assets/ui/opening-portrait.png'));
-    this.load.image('ui-woundbound-logo', asset('/assets/ui/woundbound-logo.png'));
     this.load.image('ui-background-pattern', asset('/assets/ui/background-pattern.png'));
-    this.load.image('ui-modal', asset('/assets/ui/gothic-modal-transparent.png'));
-    this.load.audio('background-music', asset('/assets/audio/crimson-rose-loop.ogg'));
-    GameAudio.preload(this, asset);
+    this.load.on('progress', this.updateBattleLoadProgress, this);
+    this.load.on('loaderror', this.onBattleLoadError, this);
+    this.load.once('complete', this.finishBattleAssetLoad, this);
+    this.load.start();
   }
 
   create(): void {
     this.game.canvas.addEventListener('contextmenu', this.preventCanvasContextMenu);
-    this.prepareVisualAssets();
+    this.createButtonPlateFrames();
+    this.createCompactTooltipFrame();
     this.focused = document.hasFocus();
     this.ui = new GameUI();
     this.gameAudio = new GameAudio(this);
@@ -85,6 +93,30 @@ export class CombatScene extends Phaser.Scene {
     this.encounterState = this.ui.state;
     this.hud = new PhaserHUD(this, this.ui);
     this.registerInput();
+    this.loadBattleAssets();
+  }
+
+  private updateBattleLoadProgress(progress: number): void { this.hud.battleLoadProgress = progress; }
+
+  private onBattleLoadError(file: Phaser.Loader.File): void {
+    if (file.key !== 'background-music' && !file.key.startsWith('ui-opening-')) {
+      this.battleLoadFailed = true;
+      console.error('[Woundbound] Failed to load game asset:', file.key);
+    }
+  }
+
+  private finishBattleAssetLoad(): void {
+    this.load.off('progress', this.updateBattleLoadProgress, this);
+    this.load.off('loaderror', this.onBattleLoadError, this);
+    if (this.battleLoadFailed) {
+      this.startingRun = false;
+      this.hud.battleLoadFailed = true;
+      return;
+    }
+    this.prepareVisualAssets();
+    this.battleAssetsReady = true;
+    this.hud.battleLoadProgress = 1;
+    if (this.startingRun) this.finishBeginDescent();
   }
 
   private prepareVisualAssets(): void {
@@ -150,7 +182,7 @@ export class CombatScene extends Phaser.Scene {
     const width = Math.round(source.width / 4), height = Math.round(source.height / 4);
     const texture = this.textures.createCanvas('ui-tooltip-frame-small', width, height);
     if (!texture) return;
-    texture.context.imageSmoothingEnabled = true;
+    texture.context.imageSmoothingEnabled = false;
     texture.context.drawImage(source, 0, 0, width, height);
     const pixels = texture.context.getImageData(0, 0, width, height).data;
     let left = width, top = height, right = 0, bottom = 0;
@@ -389,11 +421,15 @@ export class CombatScene extends Phaser.Scene {
   }
 
   private beginDescent(): void {
-    if (this.startingRun || this.ui.run.stage !== 'opening') return;
+    if (this.startingRun || this.battleLoadFailed || this.ui.run.stage !== 'opening') return;
     this.gameAudio.play('door');
-    if (!this.sound.get('background-music')?.isPlaying) this.sound.play('background-music', { loop: true, volume: this.ui.audioSettings.musicMuted ? 0 : .32 * this.ui.audioSettings.music });
     this.startingRun = true;
+    this.startMusic();
     this.drag = undefined;
+    if (this.battleAssetsReady) this.finishBeginDescent();
+  }
+
+  private finishBeginDescent(): void {
     const camera = this.cameras.main;
     camera.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
       this.ui.action('begin-run');
@@ -406,6 +442,18 @@ export class CombatScene extends Phaser.Scene {
       camera.fadeIn(650, 10, 8, 12);
     });
     camera.fadeOut(450, 10, 8, 12);
+  }
+
+  private startMusic(): void {
+    const play = (): void => {
+      if (!this.sound.get('background-music')?.isPlaying) {
+        this.sound.play('background-music', { loop: true, volume: this.ui.audioSettings.musicMuted ? 0 : .32 * this.ui.audioSettings.music });
+      }
+    };
+    if (this.cache.audio.exists('background-music')) { play(); return; }
+    this.load.once('filecomplete-audio-background-music', play);
+    this.load.audio('background-music', assetUrl('/assets/audio/crimson-rose-loop.ogg'));
+    if (!this.load.isLoading()) this.load.start();
   }
   private dragPreview(): DragPreview | undefined {
     const drag = this.drag;

@@ -86,7 +86,9 @@ export function createFullEncounter(options: { fullStartingInventory?: boolean; 
     const loadout = starterLoadouts[heroClass];
     const hero = createActor(`hero-${slot + 1}`, loadout.name, 'hero', slot, COMBAT_CONFIG.humanHealth);
     hero.pendingPuppetFormId = choosePuppetForm(heroClass, random).id;
-    hero.items.push(createItem(loadout.initial[0]!, `item-${slot + 1}`, random));
+    const firstItem = createItem(loadout.initial[0]!, `item-${slot + 1}`, random);
+    firstItem.cell = 0;
+    hero.items.push(firstItem);
     return hero;
   });
   const enemies = ['Чумная крыса', 'Культист', 'Чумная крыса', 'Культист'].map((name, slot) => {

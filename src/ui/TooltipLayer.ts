@@ -51,14 +51,14 @@ export class TooltipLayer {
     }
 
     const body = this.scene.add.text(0, 0, bodyCopy, {
-      fontFamily: 'Arial, sans-serif', fontSize: compact ? '12px' : '15px', lineSpacing: compact ? 2 : 3, color: '#e6d8c4',
+      fontFamily: 'Georgia, serif', fontSize: compact ? '12px' : '15px', lineSpacing: compact ? 2 : 3, color: '#e6d8c4',
       wordWrap: { width: Math.max(1, width - 64) }, resolution: 2,
     });
     const rows: Phaser.GameObjects.Text[] = [];
     let contentHeight = body.height + (bodyCopy ? 8 : 0);
     for (const relation of content.relations) {
       const row = this.scene.add.text(0, 0, `${relation.label} · ${relation.detail}`, {
-        fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: compact ? '12px' : '14px', lineSpacing: compact ? 1 : 2,
+        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compact ? '12px' : '14px', lineSpacing: compact ? 1 : 2,
         color: relation.color, wordWrap: { width: Math.max(1, width - 64) }, resolution: 2,
       });
       rows.push(row);
@@ -79,15 +79,23 @@ export class TooltipLayer {
     title.setPosition(32, 20);
     this.root.add(title);
 
-    let tagX = width - 32;
-    for (const tag of [...content.tags].reverse()) {
-      const label = this.scene.add.text(tagX, 51, tag.label, {
-        fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: compact ? '10px' : '12px', color: tag.color, resolution: 2,
-      }).setOrigin(1, 0);
-      if (label.width > width * .33) label.setScale(width * .33 / label.width);
-      tagX -= label.displayWidth + 8;
-      this.root.add(label);
+    const labels = content.tags.map(tag => this.scene.add.text(0, 0, tag.label, {
+      fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compact ? '10px' : '12px', color: tag.color, resolution: 2,
+    }));
+    const availableWidth = Math.max(1, width - 64);
+    const unscaledWidth = labels.reduce((total, label) => total + label.width + 14, 0) + Math.max(0, labels.length - 1) * 4;
+    const tagScale = Math.min(1, availableWidth / Math.max(1, unscaledWidth));
+    const tagBackground = this.scene.add.graphics();
+    let tagX = 32;
+    for (const label of labels) {
+      label.setScale(tagScale).setPosition(tagX + 7 * tagScale, 51 + 2 * tagScale);
+      const tagWidth = label.displayWidth + 14 * tagScale;
+      tagBackground.fillStyle(0x17121a, .8).fillRoundedRect(tagX, 51, tagWidth, 18 * tagScale, 3 * tagScale);
+      tagBackground.lineStyle(1, 0x8b765c, .65).strokeRoundedRect(tagX, 51, tagWidth, 18 * tagScale, 3 * tagScale);
+      tagX += tagWidth + 4 * tagScale;
     }
+    this.root.add(tagBackground);
+    labels.forEach(label => this.root.add(label));
 
     this.scrollContent = this.scene.add.container(0, 0);
     this.root.add(this.scrollContent);
@@ -114,7 +122,7 @@ export class TooltipLayer {
     const fullKey = `${key}|${value}|${width}|${screenHeight}`;
     if (fullKey === this.contentKey) { this.moveTo(pointerX, pointerY, screenWidth, screenHeight); return; }
     const label = this.scene.add.text(0, 0, value, {
-      fontFamily: 'Arial, sans-serif', fontSize: compact ? '12px' : '14px', color: '#f1e0c1',
+      fontFamily: 'Georgia, serif', fontSize: compact ? '12px' : '14px', color: '#f1e0c1',
       wordWrap: { width: Math.max(1, width - 64) }, resolution: 2,
     });
     const maxHeight = Math.max(1, screenHeight - 16);
@@ -183,7 +191,7 @@ export class TooltipLayer {
 
   private addScrollHint(width: number, height: number, compact: boolean): void {
     const hint = this.scene.add.text(width / 2, height - 18, 'Колесо мыши · прокрутка', {
-      fontFamily: 'Arial, sans-serif', fontSize: compact ? '9px' : '10px', color: '#b5a38c', resolution: 2,
+      fontFamily: 'Georgia, serif', fontSize: compact ? '9px' : '10px', color: '#b5a38c', resolution: 2,
     }).setOrigin(.5, .5);
     this.root.add(hint);
   }

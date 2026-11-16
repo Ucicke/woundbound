@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "build": "vite build && python scripts/build-runtime-assets.py",
     "test": "vitest",
     "test:balance": "vitest run tests/balance-simulation.test.ts --reporter=verbose",
     "typecheck": "tsc --noEmit --strict --skipLibCheck --lib ES2022,DOM --module ESNext --moduleResolution bundler --target ES2022 --allowImportingTsExtensions src/main.ts"
