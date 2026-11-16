@@ -187,8 +187,10 @@ export class PhaserHUD {
 
   /** Reapply draw order when objects are reused for a different role on the next frame. */
   private addToRoot(objects: Phaser.GameObjects.GameObject | Phaser.GameObjects.GameObject[]): void {
-    this.root.add(objects);
-    for (const object of Array.isArray(objects) ? objects : [objects]) this.root.bringToTop(object);
+    for (const object of Array.isArray(objects) ? objects : [objects]) {
+      this.root.add(object);
+      this.root.bringToTop(object);
+    }
   }
 
   private beginFrame(): void {
