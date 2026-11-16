@@ -25,12 +25,19 @@ export class ItemDialogue {
 
   constructor(private readonly random: () => number = Math.random) {}
 
+  private randomValue(): number {
+    let value: number;
+    try { value = this.random(); } catch { return .5; }
+    if (!Number.isFinite(value)) return .5;
+    return Math.max(0, Math.min(1 - Number.EPSILON, value));
+  }
+
   reset(): void { this.active = undefined; this.reply = undefined; this.lastSpokenAt = -Infinity; this.itemLastSpoken.clear(); }
 
   private say(item: CombatItem, heroId: string, trigger: DialogueTrigger, now: number, urgent = false): boolean {
     if (!urgent && (now - this.lastSpokenAt < 6500 || now - (this.itemLastSpoken.get(item.id) ?? -Infinity) < 12000)) return false;
     const choices = characterPhrases[item.definitionId ?? '']?.[trigger] ?? phrases[trigger];
-    this.active = { itemId: item.id, heroId, trigger, text: choices[Math.min(choices.length - 1, Math.floor(this.random() * choices.length))]!, expiresAt: now + 3000 };
+    this.active = { itemId: item.id, heroId, trigger, text: choices[Math.floor(this.randomValue() * choices.length)]!, expiresAt: now + 3000 };
     this.lastSpokenAt = now; this.itemLastSpoken.set(item.id, now);
     return true;
   }
@@ -47,7 +54,7 @@ export class ItemDialogue {
         this.reply = undefined;
         if (this.say(item, event.actorId, 'ownerDeath', now, true) && this.active) this.active.formerCell = dropped.cell;
       }
-    } else if (event.kind === 'item' && event.defeatedTarget && this.random() < .55) {
+    } else if (event.kind === 'item' && event.defeatedTarget && this.randomValue() < .55) {
       const hero = state.heroes.find(candidate => candidate.id === event.actorId);
       const item = hero?.items.find(candidate => candidate.id === event.sourceId);
       if (hero && item) this.say(item, hero.id, 'kill', now);
@@ -59,11 +66,11 @@ export class ItemDialogue {
     const neighbor = hero?.items.find(other => other.id !== item.id && !oldNeighbors.has(other.id) && areAdjacent(item, other));
     if (neighbor && this.say(neighbor, heroId, 'neighbor', now)) {
       this.reply = { heroId, itemId: item.id, neighborId: neighbor.id, dueAt: now + 3200 };
-    } else if (!neighbor && this.random() < .35) this.say(item, heroId, 'player', now);
+    } else if (!neighbor && this.randomValue() < .35) this.say(item, heroId, 'player', now);
   }
 
   onPlayerInteraction(item: CombatItem, heroId: string, now: number): void {
-    if (this.random() < .35) this.say(item, heroId, 'player', now);
+    if (this.randomValue() < .35) this.say(item, heroId, 'player', now);
   }
 
   tick(state: EncounterState, now: number): void {

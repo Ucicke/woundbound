@@ -20,7 +20,6 @@ export class CombatScene extends Phaser.Scene {
   private gameAudio!: GameAudio;
   private clock: CombatClock = { accumulator: 0 };
   private focused = true;
-  private nextRender = 0;
   private startingRun = false;
   private drag?: CanvasDrag;
   private pointerX = 0;
@@ -231,7 +230,6 @@ export class CombatScene extends Phaser.Scene {
       this.pointerX = -1; this.pointerY = -1;
       this.hoverTarget = '';
       this.hoverSoundTarget = '';
-      this.nextRender = 0;
     }
     const visible = !document.hidden;
     const steps = advanceClock(this.clock, delta, visible, this.focused && !this.ui.dialogOpen && !this.startingRun);
@@ -240,11 +238,8 @@ export class CombatScene extends Phaser.Scene {
     this.ui.tick(); this.ui.setPaused(!visible || !this.focused);
     if (this.lastStage && this.lastStage !== this.ui.run.stage && this.lastStage !== 'opening' && !this.startingRun) this.cameras.main.flash(180, 36, 23, 25, false);
     this.lastStage = this.ui.run.stage;
-    if (time >= this.nextRender) {
-      const preview = this.drag?.active ? this.dragPreview() : undefined;
-      this.hud.draw(this.pointerX, this.pointerY, preview);
-      this.nextRender = time + 80;
-    }
+    const preview = this.drag?.active ? this.dragPreview() : undefined;
+    this.hud.draw(this.pointerX, this.pointerY, preview);
   }
 
   private pointerDown(pointer: Phaser.Input.Pointer): void {
@@ -439,5 +434,5 @@ export class CombatScene extends Phaser.Scene {
   }
 
   private findItem(id: string): CombatItem | undefined { return this.ui.allItems.find(item => item.id === id) ?? this.ui.run.offers.find(item => item.id === id); }
-  private forceDraw(): void { this.hud.draw(this.pointerX, this.pointerY, this.dragPreview()); this.nextRender = this.time.now + 80; }
+  private forceDraw(): void { this.hud.draw(this.pointerX, this.pointerY, this.dragPreview()); }
 }

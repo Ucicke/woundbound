@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { createFullEncounter } from '../combat/encounter.ts';
-import { areAdjacent, canPlaceItem, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../combat/inventory.ts';
-import { applyEffect, attributeCooldownFactor, itemAttributeFactor, heroClassForActor, prepareEncounter, queueWinding, startBattle, transformHeroToPuppet, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { areAdjacent, canPlaceItem, INVENTORY_CELL_COUNT, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../combat/inventory.ts';
+import { attributeCooldownFactor, itemAttributeFactor, heroClassForActor, prepareEncounter, queueWinding, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { beginRun, calmWorkshopItem, claimReward, createRun, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop, type RunState } from '../combat/run.ts';
 import { ITEM_CATEGORY_LABELS, ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ItemDialogue } from '../presentation/itemDialogue.ts';
@@ -9,6 +9,13 @@ import { COMBAT_CONFIG } from '../combat/config.ts';
 import { formatItemNumber } from '../combat/formatNumber.ts';
 import { getPuppetItemCellModifiers, getPuppetItemRules } from '../combat/puppets.ts';
 import { loadAudioSettings, saveAudioSettings, type AudioChannel } from '../presentation/AudioSettings.ts';
+import { loadTestScenario, prepareFastEncounter as prepareTestEncounter, tickTestScenario, type TestModulePreview } from './testScenarios.ts';
+
+const gameActions = new Set([
+  'item', 'cell', 'rotate', 'toggle-start-loadout', 'set-start-loadout', 'begin-run', 'route', 'room', 'claim',
+  'workshop-wind', 'calm', 'leave-workshop', 'event-choice', 'store', 'wind', 'help', 'options', 'audio-mute',
+  'hero-info', 'close-hero-info', 'restart', 'cancel-reset', 'confirm-reset',
+]);
 
 /** Game state and player commands. Phaser renders this model; this class has no DOM dependency. */
 export class GameUI {
@@ -29,12 +36,16 @@ export class GameUI {
   readonly dialogue = new ItemDialogue();
   private dialogueSequence = 0;
   private fastRun = false;
-  private modulePreview: 'active' | 'rebirth' | null = null;
+  private modulePreview: TestModulePreview = null;
 
   constructor() {
     this.state = this.freshEncounter();
     this.run = createRun(this.state);
-    if (import.meta.env.MODE === 'test' && typeof location !== 'undefined') this.loadTestScenario(new URLSearchParams(location.search).get('scenario'));
+    if (import.meta.env.MODE === 'test' && typeof location !== 'undefined') {
+      const settings = loadTestScenario(this.state, this.run, new URLSearchParams(location.search).get('scenario'));
+      this.fastRun = settings.fastRun;
+      this.modulePreview = settings.modulePreview;
+    }
   }
 
   private freshEncounter(): EncounterState {
@@ -43,94 +54,13 @@ export class GameUI {
     return state;
   }
 
-  private loadTestScenario(scenario: string | null): void {
-    if (!scenario) return;
-    const hero = this.state.heroes[0]!;
-    if (scenario === 'full-run') {
-      this.fastRun = true;
-      this.run.random = () => 0;
-      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.windUpCharge = 0;
-      this.prepareFastEncounter();
-      return;
-    }
-    if (scenario === 'visual-winding') {
-      this.state.heroes[3]!.status = 'stopped'; this.state.heroes[3]!.windUpCharge = 0;
-      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
-      return;
-    }
-    if (scenario === 'visual-clockmaker') {
-      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
-      return;
-    }
-    if (scenario.startsWith('visual-module-')) {
-      const hero = this.state.heroes[3]!;
-      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 100000; });
-      if (scenario === 'visual-module-rebirth') {
-        hero.status = 'rebirthing'; hero.hp = 0; hero.rebirthMs = COMBAT_CONFIG.rebirthMs / 2;
-        this.modulePreview = 'rebirth';
-      } else if (scenario === 'visual-module-dead') {
-        hero.status = 'rebirthing'; hero.hp = 0;
-        transformHeroToPuppet(hero);
-        hero.status = 'active'; hero.durability = 1; hero.windUpCharge = hero.maxWindUp * .2;
-        applyEffect(this.state, hero.id, 'damage', 1);
-      } else if (scenario === 'visual-module-active' || scenario === 'visual-module-stopped') {
-        hero.status = 'rebirthing'; hero.hp = 0;
-        transformHeroToPuppet(hero);
-        if (scenario === 'visual-module-active') {
-          hero.status = 'active'; hero.windUpCharge = hero.maxWindUp * .68;
-          this.modulePreview = 'active';
-        }
-      }
-      return;
-    }
-    if (scenario === 'empty-backpack') { hero.items.splice(0); return; }
-    moveItem(this.state, 'item-1', hero.id, 0);
-    if (scenario === 'busy' || scenario === 'busy-result' || scenario === 'overflow') {
-      moveItem(this.state, 'whetstone-1', this.state.heroes[0]!.id, 1);
-      moveItem(this.state, 'spring-1', this.state.heroes[1]!.id, 1);
-      moveItem(this.state, 'mercy-1', this.state.heroes[2]!.id, 1);
-      moveItem(this.state, 'heart-1', this.state.heroes[3]!.id, 1);
-      if (scenario === 'overflow') this.state.heroes.forEach((candidate, slot) => {
-        const source = candidate.items[candidate.items.length - 1]!;
-        for (let copy = 0; copy < 2; copy++) candidate.items.push({ ...source, id: `test-extra-${slot}-${copy}`, name: `${source.name} ${copy + 1}`, cell: copy + 2, remainingMs: 60_000, cooldownMs: 60_000 });
-      });
-    }
-    startBattle(this.state);
-    if (scenario === 'busy' || scenario === 'busy-result' || scenario === 'overflow') {
-      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
-      if (scenario === 'busy-result') {
-        this.state.enemies.forEach(enemy => { enemy.hp = 0; enemy.status = 'dead'; });
-        this.state.outcome = 'victory'; this.state.phase = 'result';
-      }
-    } else if (scenario === 'winding') {
-      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; }); hero.status = 'stopped'; hero.windUpCharge = 0;
-    } else if (scenario === 'drop') {
-      hero.status = 'stopped'; hero.durability = 1;
-      applyEffect(this.state, hero.id, 'damage', 1);
-      this.state.enemies.forEach(enemy => applyEffect(this.state, enemy.id, 'damage', enemy.maxHp));
-    } else if (scenario === 'defeat') {
-      this.state.heroes.forEach(candidate => { candidate.status = 'stopped'; candidate.durability = 1; });
-      this.state.heroes.forEach(candidate => applyEffect(this.state, candidate.id, 'damage', 1));
-    } else if (scenario === 'log') {
-      this.state.enemies.forEach(enemy => { enemy.attackDamage = 0; enemy.hp = enemy.maxHp = 10000; });
-      this.state.heroes.forEach(candidate => candidate.items.forEach(item => { item.cooldownMs = 250; item.remainingMs = 250; item.trigger = 'always'; item.reach = 'far'; }));
-      this.state.events = Array.from({ length: 50 }, (_, index) => ({ sequence: index + 1, kind: 'state' as const, actorId: hero.id, sourceId: hero.id, sourceName: hero.name, targetId: hero.id, targetName: hero.name, amount: 0, message: `Тестовое событие ${index + 1}` }));
-      this.state.nextEventSequence = 51;
-    }
-  }
-
-  private prepareFastEncounter(): void {
-    if (!this.fastRun) return;
-    this.state.enemies.forEach(enemy => { enemy.hp = enemy.maxHp = 1; enemy.attackDamage = 0; });
-    this.state.heroes[1]!.items.forEach(item => { item.cooldownMs = item.remainingMs = 50; item.damage = 20; item.trigger = 'always'; item.reach = 'far'; });
-  }
+  private prepareFastEncounter(): void { prepareTestEncounter(this.state, this.fastRun); }
 
   get roomChoices() { return nextRoomChoices(this.run); }
   get allItems(): CombatItem[] { return [...this.state.stash, ...this.state.floor, ...this.state.heroes.flatMap(hero => hero.items)]; }
 
   tick(): void {
-    if (this.modulePreview === 'rebirth' && this.state.heroes[3]?.status === 'rebirthing') this.state.heroes[3]!.rebirthMs = COMBAT_CONFIG.rebirthMs / 2;
-    if (this.modulePreview === 'active' && this.state.heroes[3]?.status === 'active') this.state.heroes[3]!.windUpCharge = this.state.heroes[3]!.maxWindUp * .68;
+    tickTestScenario(this.state, this.modulePreview);
     const now = performance.now();
     for (const event of this.state.events) {
       if (!event.sequence || event.sequence <= this.dialogueSequence) continue;
@@ -185,12 +115,13 @@ export class GameUI {
   }
 
   selectItem(itemId: string): void {
+    if (!this.allItems.some(item => item.id === itemId)) return;
     this.selectedItem = this.selectedItem === itemId ? null : itemId;
     this.message = this.selectedItem ? 'Перетащите вещь в рюкзак' : '';
   }
 
   clickCell(heroId: string, cell: number): void {
-    if (this.state.phase === 'combat' || this.confirmReset) return;
+    if (this.state.phase === 'combat' || this.confirmReset || !Number.isInteger(cell) || cell < 0 || cell >= INVENTORY_CELL_COUNT) return;
     const hero = this.state.heroes.find(candidate => candidate.id === heroId);
     if (!hero) return;
     const occupied = hero.items.find(item => occupiedCells(item, item.cell ?? 0)?.includes(cell));
@@ -230,9 +161,15 @@ export class GameUI {
   }
 
   action(name: string, value = ''): void {
+    if (!gameActions.has(name)) return;
+    if (name === 'set-start-loadout' && value !== 'starter' && value !== 'full') return;
     if (this.confirmReset && name !== 'cancel-reset' && name !== 'confirm-reset') return;
     if (name === 'item') this.selectItem(value);
-    else if (name === 'cell') { const [heroId, raw] = value.split(':'); this.clickCell(heroId ?? '', Number(raw)); }
+    else if (name === 'cell') {
+      const match = /^([^:]+):(\d+)$/.exec(value);
+      const cell = match ? Number(match[2]) : NaN;
+      if (match && Number.isSafeInteger(cell)) this.clickCell(match[1]!, cell);
+    }
     else if (name === 'rotate' && this.selectedItem) this.rotateItem(this.selectedItem);
     else if (name === 'toggle-start-loadout' && this.run.stage === 'opening') this.startLoadoutMenuOpen = !this.startLoadoutMenuOpen;
     else if (name === 'set-start-loadout' && this.run.stage === 'opening') {
@@ -268,7 +205,7 @@ export class GameUI {
       this.audioSettings[key] = !this.audioSettings[key];
       saveAudioSettings(this.audioSettings);
     }
-    else if (name === 'hero-info') this.heroInfoId = value;
+    else if (name === 'hero-info' && this.state.heroes.some(hero => hero.id === value)) this.heroInfoId = value;
     else if (name === 'close-hero-info') this.heroInfoId = null;
     else if (name === 'restart' && (this.run.stage === 'defeat' || this.run.stage === 'victory')) {
       this.action('confirm-reset'); this.action('begin-run');
