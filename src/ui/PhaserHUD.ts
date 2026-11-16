@@ -7,6 +7,7 @@ import { ACTOR_ROWS, actorStateFrame, stoppedDollTransform, CLASS_ITEM_ART, type
 import { itemArtBounds } from '../presentation/itemGeometry.ts';
 import { getPuppetCellModifiers, getPuppetForm } from '../combat/puppets.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
+import { formatItemNumber } from '../combat/formatNumber.ts';
 import { GAME_VERSION } from '../version.ts';
 import type { GameUI } from './GameUI.ts';
 import { TooltipLayer, type ItemTooltipContent } from './TooltipLayer.ts';
@@ -1149,18 +1150,18 @@ export class PhaserHUD {
       if (height >= 65) {
         const cooldown = `⏱ ${(item.cooldownMs / 1000).toFixed(1)}с`;
         let stats: string;
-        if (item.effect === 'wind') stats = `⚙ ЗАВОД +${item.windAmount ?? 0}  ·  ${cooldown}`;
-        else if (item.effect === 'heal') stats = `✚ ЛЕЧЕНИЕ ${item.damage}  ·  ${cooldown}`;
+        if (item.effect === 'wind') stats = `⚙ ЗАВОД +${formatItemNumber(item.windAmount ?? 0)}  ·  ${cooldown}`;
+        else if (item.effect === 'heal') stats = `✚ ЛЕЧЕНИЕ ${formatItemNumber(item.damage)}  ·  ${cooldown}`;
         else if (item.trigger === 'passive') {
           const bonus = item.passiveBonuses;
-          const parts = [bonus?.armor ? `БРОНЯ +${bonus.armor}` : '', bonus?.damage ? `УРОН +${bonus.damage}` : '',
-            bonus?.healing ? `ЛЕЧЕНИЕ +${bonus.healing}` : '', bonus?.wind ? `ЗАВОД +${bonus.wind}` : '',
+          const parts = [bonus?.armor ? `БРОНЯ +${formatItemNumber(bonus.armor)}` : '', bonus?.damage ? `УРОН +${formatItemNumber(bonus.damage)}` : '',
+            bonus?.healing ? `ЛЕЧЕНИЕ +${formatItemNumber(bonus.healing)}` : '', bonus?.wind ? `ЗАВОД +${formatItemNumber(bonus.wind)}` : '',
             bonus?.cooldownFactor && bonus.cooldownFactor < 1 ? `КУЛДАУН −${Math.round((1 - bonus.cooldownFactor) * 100)}%` : ''].filter(Boolean);
           stats = `◆ ${parts.join('  ·  ') || 'ПАССИВНОЕ СВОЙСТВО'}`;
         } else {
           const damageIcon = item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
           const damageType = item.damageType === 'fire' ? 'ОГОНЬ' : item.damageType === 'arcane' ? 'МИСТИКА' : 'ФИЗ.';
-          stats = `${damageIcon} УРОН ${item.damage} ${damageType}  ·  ${cooldown}`;
+          stats = `${damageIcon} УРОН ${formatItemNumber(item.damage)} ${damageType}  ·  ${cooldown}`;
         }
         const statLabel = this.text(stats, textX, y + height - (compact ? 33 : 54), compact ? 11 : 14, '#f2cf80', Math.max(48, compact ? descriptionWidth : ctaX - textX - 10));
         statLabel.setFontFamily('Arial, sans-serif');

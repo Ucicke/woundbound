@@ -6,6 +6,7 @@ import { beginRun, calmWorkshopItem, claimReward, createRun, enterRoom, leaveWor
 import { ITEM_CATEGORY_LABELS, ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ItemDialogue } from '../presentation/itemDialogue.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
+import { formatItemNumber } from '../combat/formatNumber.ts';
 import { getPuppetItemCellModifiers, getPuppetItemRules } from '../combat/puppets.ts';
 import { loadAudioSettings, saveAudioSettings, type AudioChannel } from '../presentation/AudioSettings.ts';
 
@@ -163,10 +164,10 @@ export class GameUI {
     if (item.trigger === 'passive' || item.effect === 'passive') {
       const passive = item.passiveBonuses;
       const stats = [
-        ...(passive?.armor ? [`Броня: −${Math.round(passive.armor * nativeFactor)} урона за удар`] : []),
-        ...(passive?.damage ? [`Урон ${passive.damageReach === 'far' ? 'дальних вещей' : 'вещей'}: +${Math.round(passive.damage * nativeFactor)}`] : []),
-        ...(passive?.healing ? [`Лечение: +${Math.round(passive.healing * nativeFactor)}`] : []),
-        ...(passive?.wind ? [`Подзавод: +${Math.round(passive.wind * nativeFactor)}`] : []),
+        ...(passive?.armor ? [`Броня: +${formatItemNumber(passive.armor * nativeFactor)} к общей броне`] : []),
+        ...(passive?.damage ? [`Урон ${passive.damageReach === 'far' ? 'дальних вещей' : 'вещей'}: +${formatItemNumber(passive.damage * nativeFactor)}`] : []),
+        ...(passive?.healing ? [`Лечение: +${formatItemNumber(passive.healing * nativeFactor)}`] : []),
+        ...(passive?.wind ? [`Подзавод: +${formatItemNumber(passive.wind * nativeFactor)}`] : []),
         ...(passive?.cooldownFactor ? [`Кулдаун: −${Math.round(Math.min(.5, (1 - passive.cooldownFactor) * nativeFactor) * 100)}%`] : []),
       ];
       return `${identity}${item.description ?? 'Пассивное свойство.'} ${stats.join('; ')}.${puppetCells.length ? ` Ячейки формы: ${puppetCells.join(' ')}` : ''}`;
