@@ -3,13 +3,14 @@ import { advanceClock, stepEncounter, type CombatClock, type CombatItem } from '
 import { INVENTORY_GRID_SIZE, canPlaceItem, rotatedShape } from '../combat/inventory.ts';
 import { ACTOR_STATE_FRAME_SIZE, ACTOR_STATES_ATLAS_URL, CLASS_ITEM_ATLAS_TEXTURES, CLASS_ITEM_ATLAS_URLS, DOLL_STOPPED_ATLAS_URL, DOLL_STOPPED_FRAME_SIZE, ITEM_ATLAS_FRAME_SIZE, PUPPET_DEATH_ATLAS_URL, PUPPET_DEATH_FRAME_SIZE } from '../presentation/ArtCatalog.ts';
 import { GameUI } from '../ui/GameUI.ts';
-import { PhaserHUD, type DragPreview } from '../ui/PhaserHUD.ts';
+import { PhaserHUD, type DragPreview, type UIZone } from '../ui/PhaserHUD.ts';
 import { GameAudio } from '../presentation/GameAudio.ts';
 import type { AudioChannel } from '../presentation/AudioSettings.ts';
 
 interface CanvasDrag {
-  item: CombatItem; reward: boolean; startX: number; startY: number; x: number; y: number; active: boolean;
-  heroId?: string; grabIndex: number; grabX: number; grabY: number; originalRotation?: number;
+  item: CombatItem; previewItem: CombatItem; pointerId: number; reward: boolean;
+  startX: number; startY: number; x: number; y: number; active: boolean;
+  heroId?: string; anchor?: number; valid?: boolean; grabIndex: number; grabX: number; grabY: number;
 }
 
 /** Phaser owns the visible Canvas, input, and presentation; combat remains pure TypeScript state. */
@@ -77,6 +78,17 @@ export class CombatScene extends Phaser.Scene {
 
   create(): void {
     this.game.canvas.addEventListener('contextmenu', this.preventCanvasContextMenu);
+    this.prepareVisualAssets();
+    this.focused = document.hasFocus();
+    this.ui = new GameUI();
+    this.gameAudio = new GameAudio(this);
+    this.gameAudio.applySettings(this.ui.audioSettings);
+    this.encounterState = this.ui.state;
+    this.hud = new PhaserHUD(this, this.ui);
+    this.registerInput();
+  }
+
+  private prepareVisualAssets(): void {
     this.createDashboardPortraits();
     this.createResourceModuleFrames();
     this.createButtonPlateFrames();
@@ -92,13 +104,11 @@ export class CombatScene extends Phaser.Scene {
       ctx.save(); ctx.translate(pattern.width * 2, pattern.height * 2); ctx.scale(-1, -1); ctx.drawImage(pattern, 0, 0); ctx.restore();
       tile.refresh();
     }
-    this.focused = document.hasFocus();
-    this.ui = new GameUI();
-    this.gameAudio = new GameAudio(this);
-    this.gameAudio.applySettings(this.ui.audioSettings);
-    this.encounterState = this.ui.state;
-    this.hud = new PhaserHUD(this, this.ui);
-    this.scale.on('resize', (size: Phaser.Structs.Size) => this.cameras.resize(size.width, size.height));
+  }
+
+  private registerInput(): void {
+    const onResize = (size: Phaser.Structs.Size): void => { this.cameras.resize(size.width, size.height); };
+    this.scale.on('resize', onResize);
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => this.pointerDown(pointer));
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => this.pointerMove(pointer));
     this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => this.pointerUp(pointer));
@@ -108,6 +118,7 @@ export class CombatScene extends Phaser.Scene {
     window.addEventListener('focus', this.onFocus);
     document.addEventListener('visibilitychange', this.onVisibility);
     this.events.once('shutdown', () => {
+      this.scale.off('resize', onResize);
       this.sound.get('background-music')?.destroy();
       this.game.canvas.removeEventListener('contextmenu', this.preventCanvasContextMenu);
       window.removeEventListener('blur', this.onBlur); window.removeEventListener('focus', this.onFocus);
@@ -160,18 +171,21 @@ export class CombatScene extends Phaser.Scene {
   private createDashboardPortraits(): void {
     const size = 543;
     const arch = [[.116, .322], [.116, .17], [.13, .14], [.16, .12], [.20, .098], [.24, .12], [.28, .14], [.293, .17], [.293, .322]] as const;
+    const clipPortrait = (ctx: CanvasRenderingContext2D): void => {
+      ctx.beginPath();
+      arch.forEach(([x, y], i) => {
+        const px = (x - .0895) / .23 * size, py = (y - .097) / .23 * size;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.closePath(); ctx.clip();
+    };
     const createPortrait = (sourceKey: 'portraits' | 'doll-portraits', targetKey: string, index: number, muted = false): void => {
       if (this.textures.exists(targetKey)) return;
       const atlas = this.textures.get(sourceKey), frame = atlas.get(index);
       const texture = this.textures.createCanvas(targetKey, size, size);
       if (!texture) return;
       const ctx = texture.context;
-      ctx.save(); ctx.beginPath();
-      arch.forEach(([x, y], i) => {
-        const px = (x - .0895) / .23 * size, py = (y - .097) / .23 * size;
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      });
-      ctx.closePath(); ctx.clip();
+      ctx.save(); clipPortrait(ctx);
       ctx.drawImage(atlas.getSourceImage(index) as HTMLImageElement | HTMLCanvasElement, frame.cutX, frame.cutY, frame.cutWidth, frame.cutHeight, 0, 0, size, size);
       ctx.restore();
       if (muted) {
@@ -196,12 +210,7 @@ export class CombatScene extends Phaser.Scene {
         const texture = this.textures.createCanvas(deadKey, size, size);
         if (texture) {
           const ctx = texture.context;
-          ctx.save(); ctx.beginPath();
-          arch.forEach(([x, y], i) => {
-            const px = (x - .0895) / .23 * size, py = (y - .097) / .23 * size;
-            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-          });
-          ctx.closePath(); ctx.clip();
+          ctx.save(); clipPortrait(ctx);
           const fit = Math.min(size / source.width, size / source.height) * .9;
           const drawWidth = source.width * fit, drawHeight = source.height * fit;
           ctx.imageSmoothingEnabled = false;
@@ -217,7 +226,7 @@ export class CombatScene extends Phaser.Scene {
     if (this.encounterState !== this.ui.state) {
       this.encounterState = this.ui.state;
       this.clock.accumulator = 0;
-      this.drag = undefined; this.dragAnchor = undefined; this.dragValid = undefined;
+      this.drag = undefined;
       this.volumeDrag = undefined;
       this.pointerX = -1; this.pointerY = -1;
       this.hoverTarget = '';
@@ -240,6 +249,7 @@ export class CombatScene extends Phaser.Scene {
 
   private pointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.startingRun) return;
+    if (this.drag || this.volumeDrag) return;
     this.pointerX = pointer.x; this.pointerY = pointer.y;
     const zone = this.hud.zoneAt(pointer.x, pointer.y);
     if (this.ui.optionsOpen && zone?.action === 'audio-volume' && (zone.value === 'music' || zone.value === 'effects')) {
@@ -257,8 +267,8 @@ export class CombatScene extends Phaser.Scene {
       if (item) {
         const owner = this.ui.state.heroes.find(hero => hero.items.includes(item));
         const shape = rotatedShape(item);
-        this.drag = { item, reward: this.ui.run.offers.includes(item), startX: pointer.x, startY: pointer.y, x: pointer.x, y: pointer.y,
-          active: false, heroId: owner?.id, grabIndex: 0, grabX: shape[0]?.[0] ?? 0, grabY: shape[0]?.[1] ?? 0, originalRotation: item.rotation };
+        this.drag = { item, previewItem: { ...item }, pointerId: pointer.id, reward: this.ui.run.offers.includes(item), startX: pointer.x, startY: pointer.y, x: pointer.x, y: pointer.y,
+          active: false, heroId: owner?.id, grabIndex: 0, grabX: shape[0]?.[0] ?? 0, grabY: shape[0]?.[1] ?? 0 };
         this.ui.selectedItem = null;
         return;
       }
@@ -273,8 +283,8 @@ export class CombatScene extends Phaser.Scene {
           const shape = rotatedShape(item), anchor = item.cell ?? 0;
           const grabX = zone.cell === undefined ? shape[0]?.[0] ?? 0 : zone.cell % INVENTORY_GRID_SIZE - anchor % INVENTORY_GRID_SIZE;
           const grabY = zone.cell === undefined ? shape[0]?.[1] ?? 0 : Math.floor(zone.cell / INVENTORY_GRID_SIZE) - Math.floor(anchor / INVENTORY_GRID_SIZE);
-          this.drag = { item, reward, startX: pointer.x, startY: pointer.y, x: pointer.x, y: pointer.y, active: false,
-            heroId: zone.heroId, grabIndex: Math.max(0, shape.findIndex(([x, y]) => x === grabX && y === grabY)), grabX, grabY, originalRotation: item.rotation };
+          this.drag = { item, previewItem: { ...item }, pointerId: pointer.id, reward, startX: pointer.x, startY: pointer.y, x: pointer.x, y: pointer.y, active: false,
+            heroId: zone.heroId, grabIndex: Math.max(0, shape.findIndex(([x, y]) => x === grabX && y === grabY)), grabX, grabY };
           return;
         }
       }
@@ -283,6 +293,8 @@ export class CombatScene extends Phaser.Scene {
 
   private pointerUp(pointer: Phaser.Input.Pointer): void {
     if (this.startingRun) return;
+    if (this.volumeDrag && this.volumeDrag.pointerId !== pointer.id) return;
+    if (this.drag && this.drag.pointerId !== pointer.id) return;
     this.pointerX = pointer.x; this.pointerY = pointer.y;
     if (this.volumeDrag?.pointerId === pointer.id) {
       this.updateVolume(pointer.x); this.volumeDrag = undefined; return;
@@ -291,24 +303,37 @@ export class CombatScene extends Phaser.Scene {
     const drag = this.drag;
     if (drag) {
       if (drag.active) {
-        if (zone?.heroId && zone.cell !== undefined) {
-          const anchor = zone.cell - drag.grabY * INVENTORY_GRID_SIZE - drag.grabX;
-          const valid = canPlaceItem(this.ui.state, drag.item, zone.heroId, anchor);
-          if (valid && this.ui.dropItem(drag.item.id, zone.heroId, anchor, drag.reward)) this.gameAudio.play('ui');
-          else this.restoreRotation(drag);
-        } else if (zone?.floorDrop && !drag.reward) {
-          if (this.ui.dropToStash(drag.item.id)) this.gameAudio.play('ui');
-          else this.restoreRotation(drag);
-        } else if (zone?.action === 'claim' && drag.reward) {
-          this.ui.action('claim', drag.item.id);
-        } else this.restoreRotation(drag);
-      } else if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) {
-        if (zone.action !== 'wind') this.gameAudio.play('ui');
-        this.ui.action(zone.action, zone.value ?? '');
-      }
-      else if (!zone?.itemId && zone?.heroId && zone.cell !== undefined) this.ui.action('cell', `${zone.heroId}:${zone.cell}`);
+        this.finishItemDrag(drag, zone);
+      } else this.activateZone(zone, pointer);
       this.drag = undefined; this.forceDraw(); return;
     }
+    this.activateZone(zone, pointer);
+    this.forceDraw();
+  }
+
+  private finishItemDrag(drag: CanvasDrag, zone?: UIZone): void {
+    const anchor = this.dragDestination(drag, zone);
+    if (anchor !== undefined && zone?.heroId && canPlaceItem(this.ui.state, drag.previewItem, zone.heroId, anchor)) {
+      const originalRotation = drag.item.rotation;
+      drag.item.rotation = drag.previewItem.rotation;
+      let placed = false;
+      try {
+        placed = this.ui.dropItem(drag.item.id, zone.heroId, anchor, drag.reward);
+      } finally {
+        if (!placed) {
+          if (originalRotation === undefined) delete drag.item.rotation;
+          else drag.item.rotation = originalRotation;
+        }
+      }
+      if (placed) this.gameAudio.play('ui');
+    } else if (zone?.floorDrop && !drag.reward) {
+      if (this.ui.dropToStash(drag.item.id)) this.gameAudio.play('ui');
+    } else if (zone?.action === 'claim' && drag.reward) {
+      this.ui.action('claim', drag.item.id);
+    }
+  }
+
+  private activateZone(zone: UIZone | undefined, pointer: Phaser.Input.Pointer): void {
     if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) {
       if (zone.action === 'floor-drop') return;
       if (zone.action === 'begin-run') { this.beginDescent(); return; }
@@ -323,10 +348,11 @@ export class CombatScene extends Phaser.Scene {
       if (zone.action === 'audio-mute') this.gameAudio.applySettings(this.ui.audioSettings);
     }
     else if (!zone?.itemId && zone?.heroId && zone.cell !== undefined) this.ui.action('cell', `${zone.heroId}:${zone.cell}`);
-    this.forceDraw();
   }
 
   private pointerMove(pointer: Phaser.Input.Pointer): void {
+    if (this.volumeDrag && this.volumeDrag.pointerId !== pointer.id) return;
+    if (this.drag && this.drag.pointerId !== pointer.id) return;
     this.pointerX = pointer.x; this.pointerY = pointer.y;
     if (this.volumeDrag?.pointerId === pointer.id && pointer.isDown) { this.updateVolume(pointer.x); return; }
     const drag = this.drag;
@@ -334,12 +360,7 @@ export class CombatScene extends Phaser.Scene {
       drag.x = pointer.x; drag.y = pointer.y;
       if (!drag.active && Math.hypot(pointer.x - drag.startX, pointer.y - drag.startY) >= 6) drag.active = true;
       if (drag.active) {
-        const zone = this.hud.zoneAt(pointer.x, pointer.y);
-        if (zone?.heroId && zone.cell !== undefined) {
-          const anchor = zone.cell - drag.grabY * INVENTORY_GRID_SIZE - drag.grabX;
-          const valid = canPlaceItem(this.ui.state, drag.item, zone.heroId, anchor);
-          drag.heroId = zone.heroId; this.dragAnchor = anchor; this.dragValid = valid;
-        } else { drag.heroId = undefined; this.dragAnchor = undefined; this.dragValid = undefined; }
+        this.updateDragDestination(drag);
         return;
       }
     }
@@ -354,8 +375,23 @@ export class CombatScene extends Phaser.Scene {
     if (changed) { this.hoverTarget = target; this.forceDraw(); }
   }
 
-  private dragAnchor?: number;
-  private dragValid?: boolean;
+  private dragDestination(drag: CanvasDrag, zone?: UIZone): number | undefined {
+    if (!zone?.heroId || zone.cell === undefined) return undefined;
+    const column = zone.cell % INVENTORY_GRID_SIZE - drag.grabX;
+    const row = Math.floor(zone.cell / INVENTORY_GRID_SIZE) - drag.grabY;
+    if (column < 0 || row < 0 || column >= INVENTORY_GRID_SIZE || row >= INVENTORY_GRID_SIZE) return undefined;
+    return row * INVENTORY_GRID_SIZE + column;
+  }
+
+  private updateDragDestination(drag: CanvasDrag): void {
+    const zone = this.hud.zoneAt(drag.x, drag.y);
+    const anchor = this.dragDestination(drag, zone);
+    drag.heroId = zone?.heroId;
+    drag.anchor = anchor;
+    drag.valid = anchor !== undefined && zone?.heroId !== undefined
+      ? canPlaceItem(this.ui.state, drag.previewItem, zone.heroId, anchor)
+      : zone?.cell !== undefined ? false : undefined;
+  }
 
   private beginDescent(): void {
     if (this.startingRun || this.ui.run.stage !== 'opening') return;
@@ -379,15 +415,15 @@ export class CombatScene extends Phaser.Scene {
   private dragPreview(): DragPreview | undefined {
     const drag = this.drag;
     if (!drag) return undefined;
-    return { item: drag.item, x: drag.x, y: drag.y, heroId: drag.heroId, anchor: this.dragAnchor, valid: this.dragValid };
+    return { item: drag.previewItem, x: drag.x, y: drag.y, heroId: drag.heroId, anchor: drag.anchor, valid: drag.valid };
   }
 
   private keyDown(event: KeyboardEvent): void {
     const key = event.key.toLowerCase();
     if ((key === 'r' || key === 'к') && this.drag?.active) {
-      event.preventDefault(); this.drag.item.rotation = ((this.drag.item.rotation ?? 0) + 1) % 4;
-      const [x, y] = rotatedShape(this.drag.item)[this.drag.grabIndex] ?? [0, 0];
-      this.drag.grabX = x; this.drag.grabY = y; this.forceDraw();
+      event.preventDefault(); this.drag.previewItem.rotation = ((this.drag.previewItem.rotation ?? 0) + 1) % 4;
+      const [x, y] = rotatedShape(this.drag.previewItem)[this.drag.grabIndex] ?? [0, 0];
+      this.drag.grabX = x; this.drag.grabY = y; this.updateDragDestination(this.drag); this.forceDraw();
     } else if ((key === 'r' || key === 'к') && this.ui.selectedItem) {
       event.preventDefault(); this.ui.rotateItem(this.ui.selectedItem); this.forceDraw();
     } else if (key === 'escape' && this.ui.optionsOpen) { this.ui.action('options'); this.forceDraw(); }
@@ -403,6 +439,5 @@ export class CombatScene extends Phaser.Scene {
   }
 
   private findItem(id: string): CombatItem | undefined { return this.ui.allItems.find(item => item.id === id) ?? this.ui.run.offers.find(item => item.id === id); }
-  private restoreRotation(drag: CanvasDrag): void { if (drag.originalRotation === undefined) delete drag.item.rotation; else drag.item.rotation = drag.originalRotation; }
   private forceDraw(): void { this.hud.draw(this.pointerX, this.pointerY, this.dragPreview()); this.nextRender = this.time.now + 80; }
 }
