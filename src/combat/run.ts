@@ -65,7 +65,7 @@ function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
 
 function setEnemies(encounter: EncounterState, enemies: Combatant[]): void {
   encounter.enemies = enemies;
-  encounter.outcome = 'ongoing'; encounter.phase = 'preparation'; encounter.commands.length = 0; encounter.elapsedMs = 0; encounter.bossEnraged = false; encounter.combatEnraged = false;
+  encounter.outcome = 'ongoing'; encounter.phase = 'preparation'; encounter.commands.length = 0; encounter.elapsedMs = 0; encounter.combatEnraged = false;
 }
 
 /** The opening encounter is room one; all party and inventory objects remain owned by the encounter. */

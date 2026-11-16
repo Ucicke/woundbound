@@ -38,13 +38,13 @@ export interface Combatant {
   pendingPuppetFormId: PuppetFormId | null; puppetPassiveState: PuppetPassiveState;
 }
 export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state' | 'wind'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string; defeatedTarget?: boolean; transition?: 'rebirth' | 'puppet' | 'permadeath'; droppedItems?: Array<{ id: string; cell: number }> }
-export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; bossEnraged: boolean; combatEnraged: boolean; windRandomState: number }
+export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; combatEnraged: boolean; windRandomState: number }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
   const heroClass = side === 'hero' ? HERO_ITEM_AFFINITIES[slot] ?? 'guard' : undefined;
   const role: CombatRole = heroClass ? CLASS_ROLES[heroClass] : 'enemy';
-  return { id, name, side, slot, hp, maxHp: hp, status: side === 'hero' ? 'human' : 'enemy', items: [], targetPolicy: policy, attackDamage: side === 'enemy' ? 6 : 0, attackCooldownMs: 1800, attackRemainingMs: 1800, durability: 100, maxDurability: 100, windUpCharge: 0, maxWindUp: COMBAT_CONFIG.maxWind, rebirthMs: 0, role,
+  return { id, name, side, slot, hp, maxHp: hp, status: side === 'hero' ? 'human' : 'enemy', items: [], targetPolicy: policy, attackDamage: side === 'enemy' ? 6 : 0, attackCooldownMs: 1800, attackRemainingMs: 1800, durability: COMBAT_CONFIG.dollDurability, maxDurability: COMBAT_CONFIG.dollDurability, windUpCharge: 0, maxWindUp: COMBAT_CONFIG.maxWind, rebirthMs: 0, role,
     attributes: { ...(heroClass ? CLASS_ATTRIBUTES[heroClass] : { strength: 10, dexterity: 10, constitution: 10, intellect: 10, wisdom: 10, presence: 10 }) }, heroClass, isPuppet: false, puppetBranch: null, puppetFormId: null, pendingPuppetFormId: heroClass ? defaultPuppetForm(heroClass).id : null,
     puppetPassiveState: { itemActivations: 0, mechanicalActivations: 0, hitsTaken: 0, repeatedTargetId: null, repeatedTargetCount: 0 } };
 }
@@ -89,7 +89,7 @@ export function createState(heroes: Combatant[], enemies: Combatant[], windRando
       throw new Error(`Inconsistent puppet state for ${hero.id}`);
     }
   }
-  return { heroes, enemies, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [], elapsedMs: 0, bossEnraged: false, combatEnraged: false, windRandomState: windRandomSeed >>> 0 || 0x6d2b79f5 };
+  return { heroes, enemies, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [], elapsedMs: 0, combatEnraged: false, windRandomState: windRandomSeed >>> 0 || 0x6d2b79f5 };
 }
 
 /** Prepare a fresh encounter without discarding item identities or cooldowns. */
@@ -281,15 +281,10 @@ function advanceRebirth(state: EncounterState, deltaMs: number): void {
 
 function advanceEnrage(state: EncounterState, deltaMs: number): void {
   state.elapsedMs += deltaMs;
-  const boss = state.enemies.find(enemy => enemy.isBoss);
-  if (!boss && !state.combatEnraged && state.elapsedMs >= COMBAT_CONFIG.combatEnrageMs) {
+  if (!state.enemies.some(enemy => enemy.isBoss) && !state.combatEnraged && state.elapsedMs >= COMBAT_CONFIG.combatEnrageMs) {
     state.combatEnraged = true;
     const first = state.enemies[0];
     if (first) record(state, { kind: 'state', actorId: first.id, sourceId: first.id, sourceName: first.name, targetId: first.id, targetName: first.name, amount: 0, message: 'Враги входят в ярость' });
-  }
-  if (boss && !state.bossEnraged && state.elapsedMs >= COMBAT_CONFIG.bossEnrageMs) {
-    state.bossEnraged = true;
-    record(state, { kind: 'state', actorId: boss.id, sourceId: boss.id, sourceName: boss.name, targetId: boss.id, targetName: boss.name, amount: 0, message: `${boss.name} входит в ярость` });
   }
 }
 
@@ -359,9 +354,9 @@ function advanceEnemies(state: EncounterState, deltaMs: number): void {
     if (!target) continue;
     const isDoll = target.status === 'stopped' || target.status === 'active';
     const healthBefore = isDoll ? target.durability : target.hp;
-    const enrage = enemy.isBoss && state.bossEnraged
-      ? COMBAT_CONFIG.bossEnrageDamage + Math.floor((state.elapsedMs - COMBAT_CONFIG.bossEnrageMs) / 10_000) * 8
-      : state.combatEnraged ? Math.floor((state.elapsedMs - COMBAT_CONFIG.combatEnrageMs) / COMBAT_CONFIG.combatEnrageDamageStepMs) * COMBAT_CONFIG.combatEnrageDamage : 0;
+    const enrage = state.combatEnraged
+      ? Math.floor((state.elapsedMs - COMBAT_CONFIG.combatEnrageMs) / COMBAT_CONFIG.combatEnrageDamageStepMs) * COMBAT_CONFIG.combatEnrageDamage
+      : 0;
     const attackDamage = enemy.attackDamage + enrage;
     applyEffect(state, target.id, 'damage', attackDamage);
     const dealt = healthBefore - (isDoll ? target.durability : target.hp);
