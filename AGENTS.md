@@ -145,6 +145,13 @@ Woundbound — готический автобаттлер с менеджмен
 Conventions not yet established. Will populate as patterns emerge during development.
 <!-- GSD:conventions-end -->
 
+## Clean Code: ub-mode
+
+- After every task that changes code, review the changed code and its immediate surroundings against the `ub-mode` skill before considering the task complete. Read the locally available skill instructions; if the skill is not installed, use its source at https://github.com/unclebob/ub-mode. If neither is accessible, say so and apply the principles below using the available context.
+- Fix the relevant violations found during that review as part of the same task. Each iteration should leave the touched code cleaner and easier to understand than it was: use clear names, small cohesive functions, explicit boundaries, and remove unnecessary duplication and complexity.
+- Keep these improvements compatible with the requested behavior and appropriate to the scope of the task. Do not use the rule as a reason to rewrite unrelated parts of the project; report any larger issue that cannot be safely resolved in scope.
+- Include the clean-code review in the normal completion checks, and verify the resulting changes as appropriate for their risk.
+
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 
 ## Architecture
