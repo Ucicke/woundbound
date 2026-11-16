@@ -38,7 +38,7 @@ export interface Combatant {
   pendingPuppetFormId: PuppetFormId | null; puppetPassiveState: PuppetPassiveState;
 }
 export interface CombatEvent { sequence?: number; kind: 'item' | 'enemy' | 'state' | 'wind'; actorId: string; sourceId: string; sourceName: string; targetId: string; targetName: string; amount: number; message: string; defeatedTarget?: boolean; transition?: 'rebirth' | 'puppet' | 'permadeath'; droppedItems?: Array<{ id: string; cell: number }> }
-export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; enemy: Combatant; item: CombatItem | null; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; bossEnraged: boolean; combatEnraged: boolean; windRandomState: number }
+export interface EncounterState { heroes: Combatant[]; enemies: Combatant[]; events: CombatEvent[]; nextEventSequence: number; floor: CombatItem[]; outcome: 'ongoing' | 'victory' | 'defeat'; commands: string[]; phase: 'preparation' | 'combat' | 'result'; stash: CombatItem[]; elapsedMs: number; bossEnraged: boolean; combatEnraged: boolean; windRandomState: number }
 export interface CombatClock { accumulator: number; interrupted?: boolean }
 
 export function createActor(id: string, name: string, side: 'hero' | 'enemy', slot: number, hp: number, policy: TargetPolicy = 'front'): Combatant {
@@ -55,7 +55,7 @@ export function heroClassForActor(actor: Combatant): ItemClassAffinity | undefin
 
 export function transformHeroToPuppet(hero: Combatant, formId: PuppetFormId | null = hero.pendingPuppetFormId): boolean {
   const form = getPuppetForm(formId);
-  if (!form || hero.side !== 'hero' || hero.status !== 'rebirthing') return false;
+  if (!form || hero.side !== 'hero' || hero.status !== 'rebirthing' || form.heroClass !== heroClassForActor(hero)) return false;
   hero.heroClass = form.heroClass;
   hero.isPuppet = true;
   hero.puppetBranch = form.branch;
@@ -76,14 +76,26 @@ export function projectRoleIntent(actor: Combatant, target?: Combatant): { lane:
 }
 
 export function createState(heroes: Combatant[], enemies: Combatant[], windRandomSeed = Math.floor(Math.random() * 0x1_0000_0000)): EncounterState {
-  return { heroes, enemies, enemy: enemies[0], item: heroes[0]?.items[0] ?? null, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [], elapsedMs: 0, bossEnraged: false, combatEnraged: false, windRandomState: windRandomSeed >>> 0 || 0x6d2b79f5 };
+  if (!enemies.length) throw new Error('An encounter requires at least one enemy');
+  if (heroes.some(hero => hero.side !== 'hero' || hero.status === 'enemy') ||
+      enemies.some(enemy => enemy.side !== 'enemy' || (enemy.status !== 'enemy' && enemy.status !== 'dead') || enemy.isPuppet)) {
+    throw new Error('Encounter contains combatants on the wrong side');
+  }
+  for (const hero of heroes) {
+    const puppetStatus = hero.status === 'active' || hero.status === 'stopped';
+    const form = getPuppetForm(hero.puppetFormId);
+    if ((puppetStatus && !hero.isPuppet) || (hero.isPuppet && (!form || form.heroClass !== heroClassForActor(hero) || form.branch !== hero.puppetBranch)) ||
+        (hero.isPuppet && (hero.status === 'human' || hero.status === 'rebirthing')) || (!hero.isPuppet && (hero.puppetFormId !== null || hero.puppetBranch !== null))) {
+      throw new Error(`Inconsistent puppet state for ${hero.id}`);
+    }
+  }
+  return { heroes, enemies, events: [], nextEventSequence: 1, floor: [], outcome: 'ongoing', commands: [], phase: 'combat', stash: [], elapsedMs: 0, bossEnraged: false, combatEnraged: false, windRandomState: windRandomSeed >>> 0 || 0x6d2b79f5 };
 }
 
 /** Prepare a fresh encounter without discarding item identities or cooldowns. */
 export function prepareEncounter(state: EncounterState): void {
   state.phase = 'preparation';
   for (const hero of state.heroes) hero.items.forEach((item, index) => { item.cell ??= index; });
-  state.item = state.heroes[0]?.items[0] ?? null;
 }
 
 export function placeStashItem(state: EncounterState, itemId: string, heroId: string, cell: number): boolean {
@@ -205,7 +217,6 @@ export function heroArmor(target: Combatant): number {
 function dropDeadHeroItems(state: EncounterState, hero: Combatant): Array<{ id: string; cell: number }> {
   const dropped = hero.items.map(item => ({ id: item.id, cell: item.cell ?? 0 }));
   for (const item of hero.items.splice(0)) { delete item.cell; state.floor.push(item); }
-  state.item = state.heroes[0]?.items[0] ?? null;
   return dropped;
 }
 
@@ -224,8 +235,7 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
     else target.hp = Math.min(target.maxHp, target.hp + Math.max(0, amount));
     return true;
   }
-  if (isDoll && kind !== 'damage') return false;
-  if (kind !== 'damage') return true;
+  if (kind !== 'damage') return false;
   const form = target.isPuppet ? getPuppetForm(target.puppetFormId) : undefined;
   const armor = heroArmor(target);
   const damage = Math.max(1, Math.round(Math.max(0, amount - armor) * (isDoll ? form?.damageTakenMultiplier ?? 1 : 1)));
@@ -258,8 +268,7 @@ export function applyEffect(state: EncounterState, targetId: string, kind: 'dama
   return true;
 }
 
-export function stepEncounter(state: EncounterState, deltaMs: number): void {
-  if (state.outcome === 'defeat') return;
+function advanceRebirth(state: EncounterState, deltaMs: number): void {
   for (const hero of state.heroes) {
     if (hero.status !== 'rebirthing') continue;
     hero.rebirthMs = Math.max(0, hero.rebirthMs - Math.max(0, deltaMs));
@@ -268,7 +277,9 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       record(state, { kind: 'state', actorId: hero.id, sourceId: hero.id, sourceName: form.name, targetId: hero.id, targetName: hero.name, amount: 0, transition: 'puppet', message: `${hero.name} перерождается: ${form.name}` });
     }
   }
-  if (state.phase !== 'combat' || state.outcome !== 'ongoing') return;
+}
+
+function advanceEnrage(state: EncounterState, deltaMs: number): void {
   state.elapsedMs += deltaMs;
   const boss = state.enemies.find(enemy => enemy.isBoss);
   if (!boss && !state.combatEnraged && state.elapsedMs >= COMBAT_CONFIG.combatEnrageMs) {
@@ -280,12 +291,18 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     state.bossEnraged = true;
     record(state, { kind: 'state', actorId: boss.id, sourceId: boss.id, sourceName: boss.name, targetId: boss.id, targetName: boss.name, amount: 0, message: `${boss.name} входит в ярость` });
   }
+}
+
+function drainPuppetWind(state: EncounterState, deltaMs: number): void {
   for (const hero of state.heroes) {
     if (hero.status === 'active') {
       hero.windUpCharge = Math.max(0, hero.windUpCharge - getPuppetWindDrain(hero) * deltaMs / 1000);
       if (hero.windUpCharge === 0) hero.status = 'stopped';
     }
   }
+}
+
+function advanceItems(state: EncounterState, deltaMs: number): void {
   for (const hero of [...state.heroes].sort((a, b) => a.slot - b.slot)) {
     if (hero.status !== 'human' && hero.status !== 'active') continue;
     for (const item of hero.items) {
@@ -331,6 +348,9 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
       if (state.outcome !== 'ongoing') return;
     }
   }
+}
+
+function advanceEnemies(state: EncounterState, deltaMs: number): void {
   for (const enemy of [...state.enemies].sort((a, b) => a.slot - b.slot)) {
     if (enemy.status !== 'enemy' || enemy.attackDamage <= 0) continue;
     enemy.attackRemainingMs = Math.max(0, enemy.attackRemainingMs - deltaMs);
@@ -356,6 +376,9 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     enemy.attackRemainingMs = enemy.attackCooldownMs;
     if (state.outcome !== 'ongoing') return;
   }
+}
+
+function applyWindingCommands(state: EncounterState): void {
   for (const actorId of state.commands.splice(0)) {
     const doll = state.heroes.find(hero => hero.id === actorId);
     if (!doll || doll.status !== 'stopped' || doll.durability <= 0) continue;
@@ -377,11 +400,24 @@ export function stepEncounter(state: EncounterState, deltaMs: number): void {
     record(state, { kind: 'wind', actorId: winder.id, sourceId: winder.id, sourceName: winder.name, targetId: doll.id, targetName: doll.name, amount: doll.windUpCharge - previousWind, message: `${winder.name} заводит ${doll.name}` });
     if (doll.windUpCharge >= doll.maxWindUp) doll.status = 'active';
   }
+}
+
+export function stepEncounter(state: EncounterState, deltaMs: number): void {
+  if (state.outcome === 'defeat') return;
+  advanceRebirth(state, deltaMs);
+  if (state.phase !== 'combat' || state.outcome !== 'ongoing') return;
+  advanceEnrage(state, deltaMs);
+  drainPuppetWind(state, deltaMs);
+  advanceItems(state, deltaMs);
+  if (state.outcome !== 'ongoing') return;
+  advanceEnemies(state, deltaMs);
+  if (state.outcome !== 'ongoing') return;
+  applyWindingCommands(state);
   resolveOutcome(state);
 }
 
 export function projectEncounter(state: EncounterState): { enemyHp: number; cooldown: number; events: string[] } {
-  return { enemyHp: state.enemy.hp, cooldown: state.item?.remainingMs ?? 0, events: state.events.map(event => event.message) };
+  return { enemyHp: state.enemies[0]?.hp ?? 0, cooldown: state.heroes[0]?.items[0]?.remainingMs ?? 0, events: state.events.map(event => event.message) };
 }
 
 export function projectAction(event: CombatEvent): { actorId: string; sourceId: string; targetId: string; text: string } {

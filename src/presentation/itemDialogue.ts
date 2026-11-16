@@ -38,7 +38,7 @@ export class ItemDialogue {
   onCombatEvent(event: CombatEvent, state: EncounterState, now: number): void {
     if (event.kind === 'state' && event.transition === 'rebirth') {
       const hero = state.heroes.find(candidate => candidate.id === event.actorId);
-      const item = hero?.items.find(candidate => candidate.id === state.item?.id) ?? hero?.items[0];
+      const item = hero?.items[0];
       if (hero && item) { this.reply = undefined; this.say(item, hero.id, 'ownerDeath', now, true); }
     } else if (event.kind === 'state' && event.transition === 'permadeath') {
       const dropped = event.droppedItems?.[0];

@@ -42,7 +42,7 @@ function enemiesFor(room: number, variant: number, boss = false): Combatant[] {
 }
 
 function setEnemies(encounter: EncounterState, enemies: Combatant[]): void {
-  encounter.enemies = enemies; encounter.enemy = enemies[0]!;
+  encounter.enemies = enemies;
   encounter.outcome = 'ongoing'; encounter.phase = 'preparation'; encounter.commands.length = 0; encounter.elapsedMs = 0; encounter.bossEnraged = false; encounter.combatEnraged = false;
 }
 

@@ -49,7 +49,6 @@ function generateStarterInventory(state: EncounterState, random: () => number): 
     remaining.sort((a, b) => (b.shape?.length ?? 1) - (a.shape?.length ?? 1));
       for (const item of remaining) addPackedItem(state, hero, item, random);
   }
-  state.item = state.heroes[0]?.items[0] ?? null;
 }
 
 export function createFullEncounter(options: { fullStartingInventory?: boolean; random?: () => number } = {}): EncounterState {

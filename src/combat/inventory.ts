@@ -90,7 +90,6 @@ export function moveItem(state: EncounterState, itemId: string, heroId: string, 
   source.splice(source.indexOf(item), 1);
   item.cell = cell;
   hero.items.push(item);
-  state.item = state.heroes[0]?.items[0] ?? null;
   return true;
 }
 
@@ -102,7 +101,6 @@ export function storeItem(state: EncounterState, itemId: string): boolean {
   const [item] = owner.items.splice(index, 1);
   delete item.cell;
   state.floor.push(item);
-  state.item = state.heroes[0]?.items[0] ?? null;
   return true;
 }
 

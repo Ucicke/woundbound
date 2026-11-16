@@ -49,11 +49,11 @@ if (process.argv.includes('--packages')) {
   for (let n = 0; n < 120; n++) game.stepEncounter(state, 50);
   const view = game.projectEncounter(state);
   assert.ok(view.events.length >= 2, 'multiple events must be visible');
-  assert.ok(state.enemy.hp < state.enemy.maxHp, 'equipped item must deal damage');
+  assert.ok(state.enemies[0].hp < state.enemies[0].maxHp, 'equipped item must deal damage');
   assert.ok(view.events.every(event => event.includes('Клинок') && event.includes('Крыса')), 'events must identify actual item and target');
   const inert = game.createEncounter(false);
   for (let n = 0; n < 120; n++) game.stepEncounter(inert, 50);
-  assert.equal(inert.enemy.hp, inert.enemy.maxHp, 'unequipped hero must not attack');
+  assert.equal(inert.enemies[0].hp, inert.enemies[0].maxHp, 'unequipped hero must not attack');
   console.log('Real-model tracer passed');
 } else {
   throw new Error('Use --self-test, --packages or --tracer');
