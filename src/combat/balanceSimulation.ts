@@ -98,8 +98,6 @@ function singleItemValue(item: CombatItem, affinity?: ItemClassAffinity): number
 
 function placementOptions(state: EncounterState, item: CombatItem): PlacementOption[] {
   const options: PlacementOption[] = [];
-  const previousCell = item.cell;
-  const previousRotation = item.rotation;
   const partyPower = state.heroes.reduce((sum, hero) => sum + loadoutPower(hero.items, heroClassForActor(hero)), 0);
   const partyMean = Math.max(1, partyPower / Math.max(1, state.heroes.filter(hero => hero.status !== 'dead').length));
 
@@ -108,32 +106,27 @@ function placementOptions(state: EncounterState, item: CombatItem): PlacementOpt
     const affinity = heroClassForActor(hero);
     const before = loadoutPower(hero.items, affinity);
     for (let rotation = 0; rotation < 4; rotation++) {
-      if (rotation === 0) delete item.rotation;
-      else item.rotation = rotation;
+      const candidate = { ...item };
+      if (rotation === 0) delete candidate.rotation;
+      else candidate.rotation = rotation;
       let firstFit = true;
       for (let cell = 0; cell < 36; cell++) {
-        if (!canPlaceItem(state, item, hero.id, cell)) continue;
-        item.cell = cell;
-        hero.items.push(item);
-        const changesSynergy = hero.items.slice(0, -1).some(other => areAdjacent(item, other));
+        candidate.cell = cell;
+        if (!canPlaceItem(state, candidate, hero.id, cell)) continue;
+        const candidateItems = [...hero.items, candidate];
+        const changesSynergy = hero.items.some(other => areAdjacent(candidate, other));
         if (!firstFit && !changesSynergy) {
-          hero.items.pop();
           continue;
         }
         firstFit = false;
-        const gain = Math.max(0, loadoutPower(hero.items, affinity) - before);
-        hero.items.pop();
-        const classBonus = affinity && item.classAffinity === affinity ? singleItemValue(item, affinity) * 0.25 : 0;
+        const gain = Math.max(0, loadoutPower(candidateItems, affinity) - before);
+        const classBonus = affinity && candidate.classAffinity === affinity ? singleItemValue(candidate, affinity) * 0.25 : 0;
         const synergyScore = gain + classBonus;
         const fairness = Math.max(0.72, Math.min(1.28, 1 + (partyMean - before) / partyMean * 0.35));
         options.push({ heroId: hero.id, cell, rotation, synergyScore, balancedScore: synergyScore * fairness });
       }
     }
   }
-  if (previousCell === undefined) delete item.cell;
-  else item.cell = previousCell;
-  if (previousRotation === undefined) delete item.rotation;
-  else item.rotation = previousRotation;
   return options;
 }
 
@@ -262,8 +255,7 @@ function chooseRoute(state: EncounterState, choices: ReturnType<typeof nextRoomC
   const battles = choices.filter(choice => choice.kind === 'battle').sort((a, b) => (a.variant ?? 0) - (b.variant ?? 0));
 
   if (agent === 'random') {
-    // Stress the baseline on combat rooms, then let its item policy make the difference visible.
-    return battles[battles.length - 1] ?? choices[Math.floor(random() * choices.length)]!;
+    return choices[Math.floor(random() * choices.length)]!;
   }
 
   if (agent === 'synergy') {
@@ -290,7 +282,9 @@ function windMostUrgentDoll(state: EncounterState): void {
 }
 
 function simulateBattle(state: EncounterState): BattleResult {
-  if (state.phase !== 'combat' || state.outcome !== 'ongoing') return { outcome: 'timeout', elapsedMs: 0 };
+  if (state.phase !== 'combat' || state.outcome !== 'ongoing') {
+    throw new Error(`Cannot simulate battle from phase '${state.phase}' with outcome '${state.outcome}'.`);
+  }
   let elapsedMs = 0;
   let nextClickAt = 0;
   while (elapsedMs < MAX_BATTLE_MS && state.outcome === 'ongoing') {
@@ -302,6 +296,10 @@ function simulateBattle(state: EncounterState): BattleResult {
     elapsedMs += FRAME_MS;
   }
   return { outcome: state.outcome === 'ongoing' ? 'timeout' : state.outcome, elapsedMs };
+}
+
+function requireSimulationStep(success: boolean, action: string, room: number): asserts success {
+  if (!success) throw new Error(`Balance simulation failed to ${action} in room ${room}.`);
 }
 
 /** Plays the ten-room route with a repeatable loot policy and attentive manual winding. */
@@ -319,15 +317,16 @@ export function simulateBalanceRun(agent: BalanceAgent, seed: number): BalanceRu
   for (let room = 1; room <= RUN_ROOM_COUNT; room++) {
     let roomKind: BalanceRoomResult['kind'] = 'battle';
     if (room > 1) {
-      if (!openRoute(run)) break;
+      requireSimulationStep(openRoute(run), 'open the route', room);
       const choices = nextRoomChoices(run);
       const choice = chooseRoute(state, choices, agent, random);
-      if (!choice || !enterRoom(run, choice.id)) break;
+      if (!choice) throw new Error(`Balance simulation has no route choices in room ${room}.`);
+      requireSimulationStep(enterRoom(run, choice.id), 'enter the selected room', room);
       roomKind = choice.kind;
 
       if (choice.kind === 'cache') {
         const reward = chooseReward(state, run.offers, agent, random);
-        if (!claimReward(run, reward.id)) return result('timeout');
+        requireSimulationStep(claimReward(run, reward.id), 'claim the cache reward', room);
         rebuildGear(state, agent, random);
         roomsCleared++;
         rooms.push({ room, kind: 'cache', outcome: 'cleared', durationSeconds: 0, enemyHealth: 0, enemyDamage: 0 });
@@ -338,14 +337,17 @@ export function simulateBalanceRun(agent: BalanceAgent, seed: number): BalanceRu
         windWorkshop(run);
         const lantern = state.heroes.flatMap(hero => hero.items).find(item => item.definitionId === 'lantern' && !item.calmed);
         if (lantern && (agent !== 'random' || random() < 0.5)) calmWorkshopItem(run, lantern.id);
-        if (!leaveWorkshop(run)) return result('timeout');
+        requireSimulationStep(leaveWorkshop(run), 'leave the workshop', room);
         roomsCleared++;
         rooms.push({ room, kind: 'workshop', outcome: 'cleared', durationSeconds: 0, enemyHealth: 0, enemyDamage: 0 });
         continue;
       }
 
       if (choice.kind === 'event') {
-        if (!resolveInfirmary(run, agent === 'random' ? (random() < 0.5 ? 'heal' : 'repair') : infirmaryChoice(state))) return result('timeout');
+        requireSimulationStep(
+          resolveInfirmary(run, agent === 'random' ? (random() < 0.5 ? 'heal' : 'repair') : infirmaryChoice(state)),
+          'resolve the infirmary event', room,
+        );
         roomsCleared++;
         rooms.push({ room, kind: 'event', outcome: 'cleared', durationSeconds: 0, enemyHealth: 0, enemyDamage: 0 });
         continue;
@@ -365,7 +367,7 @@ export function simulateBalanceRun(agent: BalanceAgent, seed: number): BalanceRu
     if (run.stage === 'victory') return result('victory');
 
     const reward = chooseReward(state, run.offers, agent, random);
-    if (!claimReward(run, reward.id)) return result('timeout');
+    requireSimulationStep(claimReward(run, reward.id), 'claim the battle reward', room);
     rebuildGear(state, agent, random);
   }
   return result(run.stage === 'victory' ? 'victory' : 'timeout');
