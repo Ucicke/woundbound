@@ -16,6 +16,7 @@ if (typeof document !== 'undefined') {
           parent: gameRoot,
           width: 1280,
           height: 720,
+          fps: { target: 60 },
           backgroundColor: '#171414',
           scale: { mode: phaser.default.Scale.RESIZE },
           pixelArt: true,

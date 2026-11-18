@@ -57,6 +57,7 @@ function mixTint(start: number, end: number, amount: number): number {
 }
 const portraitFrames: Record<string, number> = { 'hero-1': 0, 'hero-2': 1, 'hero-3': 2, 'hero-4': 3 };
 const actorStatus: Record<Combatant['status'], string> = { human: 'Пока что живой', enemy: 'Враг', rebirthing: 'Перерождается', stopped: 'Кукла · завод кончился', active: 'Кукла · заведена', dead: 'Погиб навсегда' };
+const actorCardStatus: Record<Combatant['status'], string> = { human: 'Пока жив', enemy: 'Враг', rebirthing: 'Перерожд.', stopped: 'Нет завода', active: 'Заведена', dead: 'Погиб' };
 const classCardThemes = {
   guard: { frame: 0x8f9ba9, engraving: 0xc1cbd1, fill: 0x252b35, header: 0x526170, cell: 0x262c32, edge: 0x77828c, health: 0xe25955, tag: 0x60343b, dollTint: 0xc5d0de, puppetCellTint: 0x9e626b, art: 0 },
   huntress: { frame: 0x9e7c4e, engraving: 0xc6a66c, fill: 0x242c27, header: 0x536449, cell: 0x29342c, edge: 0x718363, health: 0x8ec86b, tag: 0x665b42, dollTint: 0xc5d19d, puppetCellTint: 0x78904e, art: 1 },
@@ -112,6 +113,10 @@ export class PhaserHUD {
   private nineSliceCursor = 0;
   private readonly requestedImages = new Set<string>();
 
+  private get compactLayout(): boolean {
+    return this.width < 820 && this.height > this.width;
+  }
+
   constructor(private readonly scene: Phaser.Scene, private readonly ui: GameUI) {
     this.root = scene.add.container(0, 0);
     this.actorLayer = scene.add.container(0, 0);
@@ -157,11 +162,11 @@ export class PhaserHUD {
       return;
     }
     if (this.ui.run.stage !== 'battle') this.pendingActorEvents = [];
-    const compact = this.width < 820;
+    const compact = this.compactLayout;
     this.layout(compact);
     this.consumePresentationEvents();
     this.background(); this.header(); this.party(drag); this.room(drag);
-    if (this.ui.paused) {
+    if (this.ui.paused && this.ui.run.stage === 'battle') {
       const w = Math.min(150, this.field.width * .35), h = 48;
       const x = this.field.x + this.field.width - w - 16, y = this.field.y + 14;
       this.panelTexture(x, y, w, h);
@@ -214,10 +219,13 @@ export class PhaserHUD {
   private acquireText(x: number, y: number, value: string, style: Phaser.Types.GameObjects.Text.TextStyle): Phaser.GameObjects.Text {
     const index = this.textCursor++;
     let text = this.textPool[index];
-    if (!text) { text = this.scene.add.text(x, y, value, style).setVisible(false); this.textPool[index] = text; }
+    const completeStyle = { resolution: 1, ...style };
+    if (!text) { text = this.scene.add.text(x, y, value, completeStyle).setVisible(false); this.textPool[index] = text; }
     else {
-      text.setShadow(0, 0, 'rgba(0, 0, 0, 0)', 0, false, false);
-      text.setText(value).setStyle(style);
+      text.lineSpacing = completeStyle.lineSpacing ?? 0;
+      text.letterSpacing = completeStyle.letterSpacing ?? 0;
+      text.style.setStyle(completeStyle, true, true);
+      text.setText(value);
     }
     text.setPosition(x, y).setOrigin(0, 0).setScale(1).setRotation(0).setAlpha(1).setVisible(true);
     return text;
@@ -278,7 +286,7 @@ export class PhaserHUD {
         const info = this.ui.itemDescription(item, hero);
         const match = info.match(/(?:Урон|Лечение|Подзавод):\s*\d+\./);
         const passive = info.match(/(?:Броня|Урон вещей|Урон дальних вещей|Лечение|Подзавод|Кулдаун):[^.]+/g)?.join(' · ');
-        const stat = match?.[0] ?? (item.effect === 'passive' ? passive ?? 'Пассивное свойство' : '');
+        const stat = match?.[0].replace(/\.$/, '') ?? (item.effect === 'passive' ? passive ?? 'Пассивное свойство' : '');
         const icon = item.effect === 'heal' ? '✚' : item.effect === 'wind' ? '⚙' : item.effect === 'passive' ? '◆' : item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
         const damageLabel = !item.effect || item.effect === 'damage' ? (item.damageType === 'fire' ? 'огонь' : item.damageType === 'arcane' ? 'мистика' : 'физический') : '';
         const cooldown = info.match(/Кулдаун: ([^.]+(?:\.\d+)? с(?: → [^.]+(?:\.\d+)? с)?)/)?.[1] ?? `${(item.cooldownMs / 1000).toFixed(1)} с`;
@@ -287,7 +295,7 @@ export class PhaserHUD {
           title: item.name,
           tags: [...tags].reverse().map((label, index) => ({ label, color: ['#86ddb5', '#e3ba75', '#a5baf1'][index % 3]! })),
           summary: stat ? `${icon} ${stat} ${damageLabel ? `(${damageLabel})` : ''} ${item.cooldownMs ? `· ⏱ ${cooldown}` : ''}` : '',
-          description: [item.description ?? '', item.classAffinity ? `Для класса «${ITEM_CLASS_LABELS[item.classAffinity]}»: +${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}% к эффекту.` : '', item.passiveBonuses?.armor ? `Общий предел брони: ${MAX_ARMOR}.` : '', damageLabel ? 'Типы урона пока действуют одинаково.' : ''].filter(Boolean).join('\n'),
+          description: [item.description ?? '', item.classAffinity ? `${ITEM_CLASS_LABELS[item.classAffinity]} · эффект +${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}%.` : '', item.passiveBonuses?.armor ? `Общий предел брони: ${MAX_ARMOR}.` : ''].filter(Boolean).join('\n'),
           relations: relations.map(rule => ({ label: SYNERGY_TAG_LABELS[rule.tag] ?? rule.tag.toUpperCase(), detail: rule.text, color: rule.negative ? '#ef9e70' : '#86ddb5' })),
         };
         this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, zone);
@@ -383,7 +391,7 @@ export class PhaserHUD {
     g.fillStyle(0x100c10, .4).fillRect(0, 0, this.width, this.height);
     this.addToRoot(g);
     this.panelTexture(this.right.x, this.right.y, this.right.width, this.right.height);
-    const ornamentSize = Math.min(this.width < 820 ? 34 : 64, this.left.width * .08, this.left.height * .09);
+    const ornamentSize = Math.min(this.compactLayout ? 34 : 64, this.left.width * .08, this.left.height * .09);
     this.frameCorners(this.right.x, this.right.y, this.right.width, this.right.height, ornamentSize, .9);
   }
 
@@ -430,39 +438,47 @@ export class PhaserHUD {
       this.addToRoot(icon);
     }
     else {
-      const caption = this.titleText(label, x + width / 2, y + height / 2, Math.min(21, height * .43), hot ? '#ffffff' : '#fff0d4', width - 12, .5);
+      const fontSize = action === 'claim' ? Math.min(15, height * .38) : Math.min(21, height * .43);
+      const caption = this.titleText(label, x + width / 2, y + height / 2, fontSize, hot ? '#ffffff' : '#fff0d4', width - 20, .5);
       caption.setOrigin(.5, .5);
     }
     this.zones.push({ x, y, width, height, action, value });
   }
 
   private header(): void {
+    const compact = this.compactLayout;
     const stageName = this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ 1 · СПУСК ${this.ui.run.room}/${RUN_ROOM_COUNT}`;
     if (this.ui.run.stage !== 'opening' && this.ui.run.stage !== 'victory') {
-      const available = Math.max(40, this.width - 2 * (162 + this.left.x));
-      const panelW = Math.min(420, this.width * .57, available);
-      const panelH = Math.min(58, Math.max(54, this.height * .06));
+      const controlsLeft = this.width - 162 - this.left.x;
+      const centeredWidth = 2 * (controlsLeft - this.width / 2 - 8);
+      const panelW = compact
+        ? Math.min(420, this.width * .74)
+        : Math.min(420, this.width * .57, Math.max(1, centeredWidth >= 180 ? centeredWidth : controlsLeft - 16));
+      const panelX = compact || centeredWidth >= 180 ? (this.width - panelW) / 2 : 8;
+      const panelH = compact ? 32 : Math.min(58, Math.max(54, this.height * .06));
       const panelY = 3;
-      this.panelTexture((this.width - panelW) / 2, panelY, panelW, panelH);
-      const label = this.acquireText(this.width / 2, panelY + panelH / 2, stageName, {
-        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(Math.min(20, Math.max(16, this.height * .026)))}px`,
+      this.panelTexture(panelX, panelY, panelW, panelH);
+      const label = this.acquireText(panelX + panelW / 2, panelY + panelH / 2, stageName, {
+        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(Math.min(compact ? 16 : 20, Math.max(14, this.height * .026)))}px`,
         color: '#f2dfbd', stroke: '#171414', strokeThickness: 2, resolution: 2,
       }).setOrigin(.5, .5);
       if (label.width > panelW - 20) label.setScale((panelW - 20) / label.width);
       this.addToRoot(label);
     }
-    if (this.ui.run.stage !== 'opening') this.button('↻', this.width - 42 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'restart');
-    this.button('?', this.width - 82 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'help');
-    this.button('⛶', this.width - 122 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'fullscreen');
-    this.button('⚙', this.width - 162 - this.left.x, 5, 36, this.height < 600 ? 28 : 34, 'options');
+    const controlY = compact ? 36 : 5;
+    const controlHeight = compact ? 28 : this.height < 600 ? 28 : 34;
+    if (this.ui.run.stage !== 'opening') this.button('↻', this.width - 42 - this.left.x, controlY, 36, controlHeight, 'restart');
+    this.button('?', this.width - 82 - this.left.x, controlY, 36, controlHeight, 'help');
+    this.button('⛶', this.width - 122 - this.left.x, controlY, 36, controlHeight, 'fullscreen');
+    this.button('⚙', this.width - 162 - this.left.x, controlY, 36, controlHeight, 'options');
   }
 
   private party(drag?: DragPreview): void {
     const g = this.acquireGraphics(); this.addToRoot(g);
     const heroes = [...this.ui.state.heroes].sort((a, b) => a.slot - b.slot);
-    const gap = 7, footerH = this.ui.selectedItem ? (this.width < 820 ? 26 : 31) : 0;
+    const gap = 7, footerH = this.ui.selectedItem ? (this.compactLayout ? 26 : 31) : 0;
     const cardW = (this.left.width - 12 - gap) / 2, cardH = (this.left.height - 12 - gap - footerH) / 2;
-    const compact = this.width < 820;
+    const compact = this.compactLayout;
     for (let h = 0; h < heroes.length; h++) {
       const hero = heroes[h]!;
       const classId = heroClassForActor(hero) ?? 'guard';
@@ -486,7 +502,7 @@ export class PhaserHUD {
       this.actorImage(hero.id, boardX + boardSize * .2045, boardY + boardSize * .212, boardSize * .23, hero.status, theme.dollTint);
       const nameX = boardX + boardSize * layout.labelX, nameY = boardY + boardSize * (compact ? .095 : layout.labelY);
       const nameW = boardSize * layout.labelW;
-      const nameSize = Math.max(9, Math.min(compact ? 15 : 19, boardSize * .052));
+      const nameSize = Math.max(compact ? 10 : 11, Math.min(compact ? 15 : 19, boardSize * (compact ? .064 : .066)));
       let nameTextW = nameW;
       let puppetBadge: { size: number; offset: number; color: number } | undefined;
       if (isPuppet) {
@@ -497,10 +513,11 @@ export class PhaserHUD {
         puppetBadge = { size: badgeSize, offset: badgeOffset, color: badgeColor };
         nameTextW = Math.max(16, nameW - badgeSize * 2 - (compact ? 12 : 18));
       }
-      this.titleText(hero.name.toUpperCase(), nameX, nameY, nameSize, stopped || hero.status === 'dead' ? '#d5d5d8' : '#fff2d9', nameTextW, .5);
-      const statusLabel = actorStatus[hero.status].toUpperCase();
-      const statusY = nameY + nameSize - 1;
-      let statusFontSize = Math.max(7, Math.round(Math.min(compact ? 8 : 11, boardSize * .035, (nameW - 8) / (statusLabel.length * .58))));
+      const nameText = this.titleText(hero.name.toUpperCase(), nameX, nameY, nameSize, stopped || hero.status === 'dead' ? '#d5d5d8' : '#fff2d9', nameTextW, .5);
+      const statusLabel = actorCardStatus[hero.status].toUpperCase();
+      const labelGap = compact ? 1 : 2;
+      const statusY = nameY + nameText.displayHeight + labelGap;
+      let statusFontSize = Math.max(compact ? 7 : 8, Math.round(Math.min(compact ? 8 : 10, boardSize * .04, (nameW - 8) / (statusLabel.length * .58))));
       const statusText = this.acquireText(nameX, statusY, statusLabel, {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: statusFontSize, letterSpacing: compact ? 0 : .2,
         color: stopped || hero.status === 'dead' ? '#e5e2df' : '#f4e5cd', resolution: 2, stroke: '#171414', strokeThickness: 1,
@@ -508,9 +525,14 @@ export class PhaserHUD {
       const statusWidth = isPuppet ? nameTextW : nameW - 8;
       while (statusText.width > statusWidth && statusFontSize > 7) statusText.setFontSize(--statusFontSize);
       if (statusText.width > statusWidth) statusText.setScale(statusWidth / statusText.width);
+      const statusBackground = this.acquireGraphics();
+      statusBackground.fillStyle(0x17141b, .96).fillRoundedRect(
+        nameX - statusText.displayWidth / 2 - 3, statusY, statusText.displayWidth + 6, statusText.displayHeight, 2,
+      );
+      this.addToRoot(statusBackground);
       this.addToRoot(statusText);
       if (puppetBadge) {
-        const badgeY = nameY + (nameSize + 2 + statusText.height) / 2;
+        const badgeY = nameY + (nameText.displayHeight + labelGap + statusText.displayHeight) / 2;
         this.puppetStateBadge(nameX - puppetBadge.offset, badgeY, puppetBadge.size, puppetBadge.color);
         this.puppetStateBadge(nameX + puppetBadge.offset, badgeY, puppetBadge.size, puppetBadge.color);
       }
@@ -550,8 +572,8 @@ export class PhaserHUD {
         .setDisplaySize(gridSize, gridSize).setAlpha(stopped ? .05 : .08);
       this.addToRoot(texture);
       const crispGrid = this.acquireGraphics();
-      crispGrid.lineStyle(1, stopped ? 0xbfc0c6 : theme.edge, .2);
-      for (let line = 1; line < INVENTORY_GRID_SIZE; line++) {
+      crispGrid.lineStyle(1, stopped ? 0xbfc0c6 : theme.edge, .34);
+      for (let line = 0; line <= INVENTORY_GRID_SIZE; line++) {
         crispGrid.lineBetween(gridX + line * cell, gridY, gridX + line * cell, gridY + gridSize);
         crispGrid.lineBetween(gridX, gridY + line * cell, gridX + gridSize, gridY + line * cell);
       }
@@ -714,7 +736,7 @@ export class PhaserHUD {
       g.fillStyle(0xffe8cd, .3).fillRect(x + 3, y + 2, Math.max(0, filled - 2), 1);
     }
     this.addToRoot(g);
-    if (label) this.text(label, x, y - (this.width < 820 ? 10 : 14), this.width < 820 ? 7 : 10, '#f0ddbd', width);
+    if (label) this.text(label, x, y - (this.compactLayout ? 10 : 14), this.compactLayout ? 7 : 10, '#f0ddbd', width);
   }
 
   private resourceModule(boardX: number, boardY: number, boardSize: number, hero: Combatant, shownWind: number): void {
@@ -760,13 +782,14 @@ export class PhaserHUD {
     const middle = this.acquireImage(x + capWidth, y, key, 'glass-middle').setOrigin(0).setDisplaySize(middleWidth, height);
     const rightCap = this.acquireImage(x + capWidth + middleWidth, y, key, 'right-cap').setOrigin(0).setDisplaySize(capWidth, height);
     this.addToRoot([leftCap, middle, rightCap]);
-    if (height >= 16 && (hero.status === 'human' || isDoll)) {
+    if (hero.status === 'human' || isDoll) {
       const current = isDoll ? hero.durability : hero.hp;
       const maximum = isDoll ? hero.maxDurability : hero.maxHp;
       const value = this.acquireText(x + width / 2, y + height * .5, `${Math.ceil(current)} / ${maximum}`, {
-        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(Math.max(12, Math.min(16, height * .56)))}px`,
+        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(Math.max(8, Math.min(16, height * .74)))}px`,
         color: '#fff1dc', stroke: '#171016', strokeThickness: 2, resolution: 2,
       }).setOrigin(.5, .5);
+      if (value.width > width * .67) value.setScale(width * .67 / value.width);
       value.setShadow(0, 1, '#100b10', 2, false, true);
       this.addToRoot(value);
     }
@@ -778,7 +801,7 @@ export class PhaserHUD {
       const title = run.stage === 'defeat' ? 'Конец пути' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? 'Тишина после боя' : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
       this.panelTexture(this.right.x + 5, this.right.y + 3, this.right.width - 10, 27);
       if (run.stage !== 'opening') {
-        const heading = this.titleText(title, this.right.x + this.right.width / 2, this.right.y + 16, this.width < 820 ? 15 : 19, '#f2d39a', this.right.width - 48, .5);
+        const heading = this.titleText(title, this.right.x + this.right.width / 2, this.right.y + 16, this.compactLayout ? 15 : 19, '#f2d39a', this.right.width - 48, .5);
         heading.setOrigin(.5, .5);
       }
     }
@@ -803,10 +826,10 @@ export class PhaserHUD {
     background.setScale(scale);
     this.addToRoot(background);
 
-    const selectorH = Math.max(32, Math.min(40, this.height * .055));
-    const optionH = Math.max(30, Math.min(38, this.height * .05));
+    const selectorH = Math.max(40, Math.min(48, this.height * .065));
+    const optionH = Math.max(38, Math.min(44, this.height * .06));
     const menuExtra = this.ui.startLoadoutMenuOpen ? 4 + optionH * 2 : 0;
-    const optionsH = Math.max(34, Math.min(42, this.height * .055));
+    const optionsH = Math.max(40, Math.min(46, this.height * .065));
     const verticalLimit = Math.max(60, this.height * .50 - selectorH - menuExtra - optionsH - 8);
     const w = Math.min(this.width - 28, 600, verticalLimit * 3);
     const h = w / 3;
@@ -946,7 +969,7 @@ export class PhaserHUD {
     }
     // Keep active actors' feet apart on the ground plane while allowing front and rear rows to overlap in depth.
     const standing = [...positions.values()].filter(position => position.actor.status !== 'dead' && position.actor.status !== 'rebirthing');
-    const baseSize = Math.min(this.width < 820 ? 132 : 220, this.field.height * (this.width < 820 ? .4 : .39));
+    const baseSize = Math.min(this.compactLayout ? 132 : 220, this.field.height * (this.compactLayout ? .4 : .39));
     for (let pass = 0; pass < 6; pass++) {
       for (let i = 0; i < standing.length; i++) for (let j = i + 1; j < standing.length; j++) {
         const a = standing[i]!, b = standing[j]!;
@@ -964,7 +987,7 @@ export class PhaserHUD {
     const ordered = [...positions.values()].sort((a, b) => a.y - b.y);
     for (const position of ordered) {
       const { actor, hero, x, y, scale } = position;
-      const artSize = Math.min(this.width < 820 ? 132 : 220, this.field.height * (this.width < 820 ? .4 : .39)) * scale;
+      const artSize = Math.min(this.compactLayout ? 132 : 220, this.field.height * (this.compactLayout ? .4 : .39)) * scale;
       const sprite = actor.side === 'hero' ? actor.id : actor.isBoss ? 'boss' : actor.name.includes('крыса') ? 'rat' : actor.name.includes('Культист') ? 'cultist' : 'automaton';
       visibleActors.add(actor.id);
       const view = this.getActorView(actor, sprite);
@@ -979,14 +1002,14 @@ export class PhaserHUD {
       view.shadow.clear()
         .fillStyle(0x12101c, .2).fillEllipse(0, artSize * .43, artSize * .76, artSize * .23)
         .fillStyle(0x09090c, .42).fillEllipse(0, artSize * .43, artSize * .48, artSize * .10);
-      view.meter.clear().fillStyle(0x191719, .95).fillRoundedRect(-artSize * .30, artSize * .45, artSize * .60, this.width < 820 ? 5 : 7, 3);
+      view.meter.clear().fillStyle(0x191719, .95).fillRoundedRect(-artSize * .30, artSize * .45, artSize * .60, this.compactLayout ? 5 : 7, 3);
       const current = actor.status === 'active' || actor.status === 'stopped' || actor.status === 'dead' ? actor.durability : actor.hp;
       const max = actor.status === 'active' || actor.status === 'stopped' || actor.status === 'dead' ? actor.maxDurability : actor.maxHp;
       const previous = this.displayedHealth.get(actor.id);
       const shown = previous ? previous.value + (current - previous.value) * (1 - Math.exp(-Math.max(0, now - previous.at) / 250)) : current;
       this.displayedHealth.set(actor.id, { value: shown, at: now });
       view.meter.setVisible(actor.status !== 'rebirthing' && actor.status !== 'dead');
-      view.meter.fillStyle(hero ? 0x79c36b : 0xe05b59, 1).fillRoundedRect(-artSize * .30, artSize * .45, artSize * .60 * Math.max(0, Math.min(1, shown / Math.max(1, max))), this.width < 820 ? 5 : 7, 3);
+      view.meter.fillStyle(hero ? 0x79c36b : 0xe05b59, 1).fillRoundedRect(-artSize * .30, artSize * .45, artSize * .60 * Math.max(0, Math.min(1, shown / Math.max(1, max))), this.compactLayout ? 5 : 7, 3);
       view.body.setAlpha(actor.status === 'dead' ? .56 : actor.status === 'rebirthing' ? .78 : 1);
       const actorClass = hero ? heroClassForActor(actor) : undefined;
       const dollTint = actorClass ? classCardThemes[actorClass].dollTint : 0xffffff;
@@ -1180,7 +1203,7 @@ export class PhaserHUD {
   }
 
   private rewards(): void {
-    const offers = this.ui.run.offers, compact = this.width < 820;
+    const offers = this.ui.run.offers, compact = this.compactLayout;
     const gap = compact ? 6 : 10;
     const y0 = this.field.y + 5;
     const available = Math.max(1, this.right.y + this.right.height - (compact ? 14 : 30) - y0);
@@ -1189,43 +1212,54 @@ export class PhaserHUD {
       const x = this.right.x + 12, y = y0 + index * (height + gap), w = this.right.width - 24;
       const color = itemRarityTint(item.rarity);
       const hot = this.hover?.action === 'claim' && this.hover.value === item.id;
-      const iconSize = Math.min(height - 14, compact ? 62 : 102);
+      const shortCard = height < 126;
+      const tinyCard = height < 70;
+      const cardCompact = compact || shortCard;
+      const iconSize = Math.min(height - 14, cardCompact ? 62 : 102);
       const iconWell = { x: x + 7, y: y + 7, width: iconSize + 14, height: height - 14 };
       const iconX = iconWell.x + iconWell.width / 2, iconY = y + height / 2;
-      const textX = iconWell.x + iconWell.width + (compact ? 12 : 18), textWidth = Math.max(50, w - (textX - x) - 12);
+      const textX = iconWell.x + iconWell.width + (cardCompact ? 12 : 18), textWidth = Math.max(50, w - (textX - x) - 12);
       this.panelTexture(x, y, w, height);
       const g = this.acquireGraphics();
       g.fillStyle(color, hot ? .25 : .14).fillRoundedRect(x + 2, y + 2, w - 4, height - 4, 5);
-      g.lineStyle(hot ? 3 : 2, hot ? mixTint(color, 0xfff0d0, .28) : color, .98).strokeRoundedRect(x, y, w, height, 6);
+      g.lineStyle(hot ? 2 : 1, hot ? mixTint(color, 0xfff0d0, .28) : color, .8).strokeRoundedRect(x, y, w, height, 6);
       g.lineStyle(1, 0xe2c18a, hot ? .82 : .58).strokeRoundedRect(x + 4, y + 4, w - 8, height - 8, 4);
       this.addToRoot(g);
       this.panelTexture(iconWell.x, iconWell.y, iconWell.width, iconWell.height);
       this.frameCorners(x, y, w, height, Math.min(compact ? 24 : 40, height * .3), .95);
-      this.itemImage(item, iconX, iconY, iconSize * 1.1);
-      const titleY = y + (compact ? 11 : 20);
+      this.itemImage(item, iconX, iconY, iconSize * .94);
+      const titleY = y + (shortCard ? Math.min(23, height * .2) : compact ? 20 : 24);
       const ctaW = Math.min(compact ? 82 : 126, w * .25);
-      const ctaH = compact ? 30 : 36;
+      const ctaH = compact ? Math.min(44, height - 10) : 36;
       const ctaX = x + w - ctaW - (compact ? 22 : 24);
-      const copyWidth = Math.max(50, Math.min(textWidth - ctaW - 12, 65 * (compact ? 13 : 24) * .53));
-      const title = this.titleText(item.name, textX, titleY, compact ? 14 : 24, '#fff0cf', copyWidth);
-      const titleSpace = compact ? 19 : 27;
+      const copyWidth = Math.max(50, Math.min(textWidth - ctaW - 12, 65 * (cardCompact ? 13 : 24) * .53));
+      const title = this.titleText(item.name, textX, titleY, cardCompact ? 14 : 24, '#fff0cf', copyWidth);
+      if (title.scaleX < .82) {
+        title.setScale(1);
+        let readableName = item.name;
+        while (readableName.length > 5 && title.width > copyWidth) {
+          readableName = `${readableName.slice(0, -2).trimEnd()}…`;
+          title.setText(readableName);
+        }
+      }
+      const titleSpace = tinyCard ? 12 : shortCard || compact ? 19 : 27;
       if (title.displayHeight > titleSpace) title.setScale(title.scaleX * titleSpace / title.displayHeight);
       const rarityText = `${rarityLabels[item.rarity ?? 'common']}  ·  ${categoryLabels[item.category ?? 'relic']}`;
-      const rarity = this.acquireText(textX, titleY + (compact ? 17 : 29), rarityText, {
-        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${compact ? 11 : 13}px`,
-        color: item.rarity === 'common' || !item.rarity ? '#cfcbd0' : `#${mixTint(color, 0xffffff, .18).toString(16).padStart(6, '0')}`, stroke: '#171414', strokeThickness: 1, resolution: 2,
+      const rarity = this.acquireText(textX, titleY + (tinyCard ? 11 : shortCard || compact ? 14 : 29), rarityText, {
+        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${cardCompact ? 11 : 13}px`,
+        color: item.rarity === 'common' || !item.rarity ? '#cfcbd0' : `#${mixTint(color, 0xffffff, .42).toString(16).padStart(6, '0')}`, stroke: '#171414', strokeThickness: 1, resolution: 2,
       });
       if (rarity.width > copyWidth) rarity.setScale(copyWidth / rarity.width);
       this.addToRoot(rarity);
-      const descY = titleY + (compact ? 31 : 52);
+      const descY = titleY + (cardCompact ? 27 : 52);
       const descriptionWidth = copyWidth;
-      const description = this.acquireText(textX, descY, item.description ?? '', {
-        fontFamily: 'Georgia, serif', fontSize: `${compact ? 11 : 15}px`, lineSpacing: compact ? 2 : 3,
+      const description = this.acquireText(textX, descY, shortCard ? '' : item.description ?? '', {
+        fontFamily: 'Georgia, serif', fontSize: `${cardCompact ? 11 : 15}px`, lineSpacing: cardCompact ? 2 : 3,
         color: '#eadfce', stroke: '#171414', strokeThickness: 1, resolution: 2,
         wordWrap: { width: descriptionWidth },
       });
-      const descriptionSpace = Math.max(1, y + height - (height >= 65 ? (compact ? 35 : 60) : 12) - descY);
-      if (descriptionSpace < 8) description.setVisible(false);
+      const descriptionSpace = Math.max(1, y + height - (cardCompact ? 40 : 60) - descY);
+      if (shortCard || descriptionSpace < 8) description.setVisible(false);
       if (compact && description.height > descriptionSpace) {
         // Preserve a readable single line on small screens; the full description stays in the tooltip.
         let excerpt = item.description ?? '';
@@ -1237,7 +1271,7 @@ export class PhaserHUD {
         if (description.height > descriptionSpace) description.setVisible(false);
       } else if (description.height > descriptionSpace) description.setScale(descriptionSpace / description.height);
       this.addToRoot(description);
-      if (height >= 65) {
+      if (height >= 58) {
         const cooldown = `⏱ ${(item.cooldownMs / 1000).toFixed(1)}с`;
         let stats: string;
         if (item.effect === 'wind') stats = `⚙ ЗАВОД +${formatItemNumber(item.windAmount ?? 0)}  ·  ${cooldown}`;
@@ -1253,7 +1287,22 @@ export class PhaserHUD {
           const damageType = item.damageType === 'fire' ? 'ОГОНЬ' : item.damageType === 'arcane' ? 'МИСТИКА' : 'ФИЗ.';
           stats = `${damageIcon} УРОН ${formatItemNumber(item.damage)} ${damageType}  ·  ${cooldown}`;
         }
-        this.text(stats, textX, y + height - (compact ? 33 : 54), compact ? 11 : 14, '#f2cf80', Math.max(48, compact ? descriptionWidth : ctaX - textX - 10));
+        if (shortCard && item.trigger !== 'passive' && item.effect !== 'passive') {
+          const icon = item.effect === 'wind' ? '⚙' : item.effect === 'heal' ? '✚' : item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
+          const amount = item.effect === 'wind' ? item.windAmount ?? 0 : item.damage;
+          const label = item.effect === 'wind' ? 'ЗАВОД' : item.effect === 'heal' ? 'ЛЕЧЕНИЕ' : 'УРОН';
+          stats = `${icon} ${label} ${formatItemNumber(amount)} · ${cooldown}`;
+        }
+        let statsBottomInset = compact ? 39 : 54;
+        if (shortCard) statsBottomInset = height >= 96 ? 42 : 34;
+        if (tinyCard) statsBottomInset = 27;
+        const statLabel = this.acquireText(textX, y + height - statsBottomInset, stats, {
+          fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${tinyCard ? 9 : cardCompact ? 11 : 14}px`, color: '#f2cf80',
+          stroke: '#171414', strokeThickness: 1, resolution: 2,
+        });
+        const statWidth = Math.max(1, compact ? descriptionWidth : ctaX - textX - 10);
+        if (statLabel.width > statWidth) statLabel.setScale(statWidth / statLabel.width);
+        this.addToRoot(statLabel);
       }
       this.zones.push({ x, y, width: w, height, action: 'claim', value: item.id, itemId: item.id, reward: true });
       this.button('Взять', ctaX, y + (height - ctaH) / 2, ctaW, ctaH, 'claim', item.id, true);
@@ -1262,7 +1311,7 @@ export class PhaserHUD {
 
   private workshop(): void {
     const x = this.right.x + 12, w = this.right.width - 24; let y = this.right.y + 52;
-    this.text('Ключ возвращает куклам завод, но не чинит их корпус.', x, y, this.width < 820 ? 9 : 13, '#e1cfaf', w); y += this.width < 820 ? 36 : 54;
+    this.text('Ключ возвращает куклам завод, но не чинит их корпус.', x, y, this.compactLayout ? 9 : 13, '#e1cfaf', w); y += this.compactLayout ? 36 : 54;
     this.button('Полностью завести кукол', x, y, w, 38, 'workshop-wind', '', true); y += 46;
     const cursed = this.ui.allItems.filter(item => item.definitionId === 'lantern' && !item.calmed);
     const calmed = this.ui.run.workshopCalmed;
@@ -1273,7 +1322,7 @@ export class PhaserHUD {
 
   private event(): void {
     const x = this.right.x + 12, w = this.right.width - 24, y = this.right.y + 54;
-    this.text('В лечебнице хватит припасов только на один выбор.', x, y, this.width < 820 ? 9 : 13, '#e1cfaf', w);
+    this.text('В лечебнице хватит припасов только на один выбор.', x, y, this.compactLayout ? 9 : 13, '#e1cfaf', w);
     this.button('Лечить людей · +15 здоровья', x, y + 46, w, 40, 'event-choice', 'heal');
     this.button('Починить кукол · +15 прочности', x, y + 96, w, 40, 'event-choice', 'repair');
   }
@@ -1286,12 +1335,12 @@ export class PhaserHUD {
     if (this.ui.state.floor.length) {
       this.text(`НА ПОЛУ · ${this.ui.state.floor.length}`, x, y, 11, '#f0cc86', w);
       this.drawLooseItems(this.ui.state.floor, x, y + 19, w);
-    } else this.text('Враги повержены.', x, y, this.width < 820 ? 9 : 13, '#e1cfaf', w);
+    } else this.text('Враги повержены.', x, y, this.compactLayout ? 9 : 13, '#e1cfaf', w);
     this.button('Выбрать следующую комнату', x, this.right.y + this.right.height - 60, w, 50, 'route', '', true);
   }
 
   private drawLooseItems(items: CombatItem[], x: number, y: number, width: number): number {
-    const size = this.width < 820 ? 36 : 54, gap = 6;
+    const size = this.compactLayout ? 36 : 54, gap = 6;
     const columns = Math.max(1, Math.floor((width + gap) / (size + gap)));
     items.forEach((item, index) => {
       const bx = x + index % columns * (size + gap), by = y + Math.floor(index / columns) * (size + gap);
@@ -1307,8 +1356,8 @@ export class PhaserHUD {
     const x = this.right.x + 12, y = this.field.y + 26, w = this.right.width - 24;
     if (!win) {
       this.panelTexture(x, y - 8, w, 86);
-      this.titleText('Завод остановлен', x + w / 2, y, this.width < 820 ? 20 : 32, '#d3847a', w, .5);
-      this.text('Все куклы разрушены.', x, y + 43, this.width < 820 ? 9 : 13, '#e9d5b5', w);
+      this.titleText('Завод остановлен', x + w / 2, y, this.compactLayout ? 20 : 32, '#d3847a', w, .5);
+      this.text('Все куклы разрушены.', x, y + 43, this.compactLayout ? 9 : 13, '#e9d5b5', w);
     }
     this.button('Начать новый забег', x, this.right.y + this.right.height - 76, w, 64, 'restart', '', true);
   }
@@ -1327,7 +1376,7 @@ export class PhaserHUD {
 
   private drawDrag(drag: DragPreview): void {
     const shape = rotatedShape(drag.item);
-    const size = Math.min(this.width < 820 ? 24 : 34, 160 / Math.max(1, shape.length));
+    const size = Math.min(this.compactLayout ? 24 : 34, 160 / Math.max(1, shape.length));
     const g = this.acquireGraphics(); g.fillStyle(drag.valid === false ? 0xae4f4e : 0xb98954, .82);
     for (const [dx, dy] of shape) g.fillRoundedRect(drag.x + dx * size, drag.y + dy * size, size - 2, size - 2, 3);
     this.addToRoot(g);
@@ -1343,14 +1392,14 @@ export class PhaserHUD {
     const cells = occupiedCells(item, speech.formerCell ?? item.cell ?? 0);
     const anchor = cells?.map(index => this.cells.get(`${hero!.id}:${index}`)).find(Boolean);
     if (!anchor) return;
-    const maxWidth = Math.min(this.width < 820 ? 155 : 210, this.width - 20);
+    const maxWidth = Math.min(this.compactLayout ? 155 : 210, this.width - 20);
     const label = this.acquireText(0, 0, speech.text, { fontFamily: 'Georgia, serif', fontStyle: 'bold',
-      fontSize: this.width < 820 ? '10px' : '13px', color: '#fff0cc', stroke: '#241717', strokeThickness: 1,
+      fontSize: this.compactLayout ? '10px' : '13px', color: '#fff0cc', stroke: '#241717', strokeThickness: 1,
       wordWrap: { width: maxWidth - 20 }, resolution: 2 });
     const w = Math.ceil(label.width + 18), h = Math.ceil(label.height + 12);
     const anchorX = anchor.x + anchor.size / 2, anchorY = anchor.y;
     const x = Math.max(5, Math.min(this.width - w - 5, anchorX - w / 2));
-    const compact = this.width < 820;
+    const compact = this.compactLayout;
     const cardH = (this.left.height - 12 - 7 - (this.ui.selectedItem ? (compact ? 26 : 31) : 0)) / 2;
     const cardW = (this.left.width - 12 - 7) / 2;
     const boardSize = Math.max(1, Math.min(cardW - 4, cardH - 4));
@@ -1385,8 +1434,8 @@ export class PhaserHUD {
   private resetDialog(): void {
     const x = this.width * .26, y = this.height * .34, w = this.width * .48, h = this.height * .3;
     this.modalBackdrop(); this.panelTexture(x, y, w, h);
-    this.titleText('Начать заново?', x + w / 2, y + 20, this.width < 820 ? 20 : 30, '#f0d18f', w - 24, .5);
-    this.text('Текущий забег будет сброшен.', x + w / 2, y + 58, this.width < 820 ? 10 : 14, '#e0ceb1', undefined, .5);
+    this.titleText('Начать заново?', x + w / 2, y + 20, this.compactLayout ? 20 : 30, '#f0d18f', w - 24, .5);
+    this.text('Текущий забег будет сброшен.', x + w / 2, y + 58, this.compactLayout ? 10 : 14, '#e0ceb1', undefined, .5);
     this.button('Сбросить', x + 12, y + h - 58, w / 2 - 18, 44, 'confirm-reset', '', true);
     this.button('Вернуться', x + w / 2 + 6, y + h - 58, w / 2 - 18, 44, 'cancel-reset');
   }
@@ -1447,7 +1496,8 @@ export class PhaserHUD {
       this.addToRoot(this.acquireNineSlice(x, y, w, h, capX, capX, capY, capY));
       return;
     }
-    const scale = Math.min(.18, w / 480, h / 440);
+    // Keep the frame's upper and lower rails clear of text on short panels.
+    const scale = Math.min(.18, w / 480, h / 700);
     const panel = this.acquireNineSlice(x, y, w / scale, h / scale, 240, 240, 220, 220, 'ui-panel-nine-slice');
     panel.setScale(scale);
     this.addToRoot(panel);
