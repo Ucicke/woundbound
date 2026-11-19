@@ -66,10 +66,10 @@ const classCardThemes = {
 } as const;
 // All generated class dashboards share the Clockmaker's portrait, nameplate, resource groove, and tray geometry.
 const dashboardLayout = {
-  guard: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
-  huntress: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
-  pilgrim: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
-  clockmaker: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelY: .11, labelW: .46 },
+  guard: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelW: .46 },
+  huntress: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelW: .46 },
+  pilgrim: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelW: .46 },
+  clockmaker: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelW: .46 },
 } as const;
 
 /** All visible UI is drawn to Phaser's Canvas; input zones share these exact bounds. */
@@ -500,7 +500,7 @@ export class PhaserHUD {
       if (stopped && this.ui.state.phase === 'combat') this.zones.push({ x, y, width: cardW, height: cardH, action: 'wind', value: hero.id });
       const isPuppet = hero.isPuppet;
       this.actorImage(hero.id, boardX + boardSize * .2045, boardY + boardSize * .212, boardSize * .23, hero.status, theme.dollTint);
-      const nameX = boardX + boardSize * layout.labelX, nameY = boardY + boardSize * (compact ? .095 : layout.labelY);
+      const nameX = boardX + boardSize * layout.labelX, nameY = boardY + boardSize * .115;
       const nameW = boardSize * layout.labelW;
       const nameSize = Math.max(compact ? 10 : 11, Math.min(compact ? 15 : 19, boardSize * (compact ? .064 : .066)));
       let nameTextW = nameW;
@@ -515,24 +515,18 @@ export class PhaserHUD {
       }
       const nameText = this.titleText(hero.name.toUpperCase(), nameX, nameY, nameSize, stopped || hero.status === 'dead' ? '#d5d5d8' : '#fff2d9', nameTextW, .5);
       const statusLabel = actorCardStatus[hero.status].toUpperCase();
-      const labelGap = compact ? 1 : 2;
-      const statusY = nameY + nameText.displayHeight + labelGap;
-      let statusFontSize = Math.max(compact ? 7 : 8, Math.round(Math.min(compact ? 8 : 10, boardSize * .04, (nameW - 8) / (statusLabel.length * .58))));
+      const statusY = boardY + boardSize * .215;
+      let statusFontSize = Math.max(compact ? 8 : 9, Math.round(Math.min(compact ? 10 : 12, boardSize * .05, (nameW - 8) / (statusLabel.length * .58))));
       const statusText = this.acquireText(nameX, statusY, statusLabel, {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: statusFontSize, letterSpacing: compact ? 0 : .2,
         color: stopped || hero.status === 'dead' ? '#e5e2df' : '#f4e5cd', resolution: 2, stroke: '#171414', strokeThickness: 1,
-      }).setOrigin(.5, 0);
+      }).setOrigin(.5, .5);
       const statusWidth = isPuppet ? nameTextW : nameW - 8;
       while (statusText.width > statusWidth && statusFontSize > 7) statusText.setFontSize(--statusFontSize);
       if (statusText.width > statusWidth) statusText.setScale(statusWidth / statusText.width);
-      const statusBackground = this.acquireGraphics();
-      statusBackground.fillStyle(0x17141b, .96).fillRoundedRect(
-        nameX - statusText.displayWidth / 2 - 3, statusY, statusText.displayWidth + 6, statusText.displayHeight, 2,
-      );
-      this.addToRoot(statusBackground);
       this.addToRoot(statusText);
       if (puppetBadge) {
-        const badgeY = nameY + (nameText.displayHeight + labelGap + statusText.displayHeight) / 2;
+        const badgeY = nameY + nameText.displayHeight / 2;
         this.puppetStateBadge(nameX - puppetBadge.offset, badgeY, puppetBadge.size, puppetBadge.color);
         this.puppetStateBadge(nameX + puppetBadge.offset, badgeY, puppetBadge.size, puppetBadge.color);
       }
@@ -746,7 +740,7 @@ export class PhaserHUD {
     const width = boardSize * .50, height = boardSize * .09;
     const capWidth = height * 300 / sourceHeight, middleWidth = Math.max(1, width - capWidth * 2);
     const x = boardX + boardSize * .66 - width / 2;
-    const y = boardY + boardSize * .288 - height / 2;
+    const y = boardY + boardSize * .32 - height / 2;
     const g = this.acquireGraphics();
     const mapX = (fraction: number): number => {
       const sourceX = fraction * sourceWidth;

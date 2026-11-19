@@ -58,8 +58,8 @@ export class CombatScene extends Phaser.Scene {
     }
     this.load.spritesheet('portraits', asset('/assets/source/raw/party-portraits-woundbound-imagegen.png'), { frameWidth: 543, frameHeight: 543 });
     const dashboardAssets = {
-      guard: 'dashboard-guard-gothic-pixel.png', huntress: 'dashboard-huntress-gothic-pixel.png',
-      pilgrim: 'dashboard-pilgrim-gothic-pixel.png', clockmaker: 'dashboard-clockmaker-modular.png',
+      guard: 'dashboard-guard-status-v2.png', huntress: 'dashboard-huntress-status-v2.png',
+      pilgrim: 'dashboard-pilgrim-status-v2.png', clockmaker: 'dashboard-clockmaker-status-v2.png',
     } as const;
     for (const [classId, file] of Object.entries(dashboardAssets)) this.load.image(`ui-dashboard-${classId}`, asset(`/assets/ui/${file}`));
     this.load.image('ui-tube-single', asset('/assets/ui/clockmaker-tube-single.png'));
