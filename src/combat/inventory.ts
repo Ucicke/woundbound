@@ -119,13 +119,13 @@ export function areAdjacent(a: CombatItem, b: CombatItem): boolean {
 export const SYNERGY_TAG_LABELS: Record<string, string> = { blade: 'КЛИНОК', whetstone: 'ТОЧИЛЬНЫЙ КАМЕНЬ', clockwork: 'МЕХАНИЗМ', spring: 'ПРУЖИНА', firearm: 'СТРЕЛКОВОЕ', scope: 'ПРИЦЕЛ', support: 'ПОДДЕРЖКА', glass: 'СТЕКЛО', bell: 'КОЛОКОЛ' };
 export function synergyTargets(item: CombatItem): Array<{ tag: string; text: string; negative?: boolean }> {
   const result: Array<{ tag: string; text: string; negative?: boolean }> = [];
-  if (item.tags?.includes('whetstone')) result.push({ tag: 'blade', text: `Соседнему клинку +${SYNERGY_RULES.whetstoneDamage} урона` });
-  if (item.tags?.includes('blade')) result.push({ tag: 'whetstone', text: `Камень рядом: +${SYNERGY_RULES.whetstoneDamage} урона` });
-  if (item.tags?.includes('spring')) result.push({ tag: 'clockwork', text: `Соседнему механизму −${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% кулдауна` });
-  if (item.tags?.includes('clockwork')) result.push({ tag: 'spring', text: `Пружина рядом: −${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% кулдауна` });
-  if (item.tags?.includes('scope')) result.push({ tag: 'firearm', text: `Соседнему стрелковому оружию +${SYNERGY_RULES.scopeDamage} урона` });
-  if (item.tags?.includes('firearm')) result.push({ tag: 'scope', text: `Прицел рядом: +${SYNERGY_RULES.scopeDamage} урона` });
-  if (item.definitionId === 'lantern' && !item.calmed) result.push({ tag: 'blade', text: `Клинок рядом: +${Math.round(SYNERGY_RULES.jealousCooldownIncrease * 100)}% кулдауна`, negative: true });
+  if (item.tags?.includes('whetstone')) result.push({ tag: 'blade', text: `+${SYNERGY_RULES.whetstoneDamage} урона` });
+  if (item.tags?.includes('blade')) result.push({ tag: 'whetstone', text: `+${SYNERGY_RULES.whetstoneDamage} урона` });
+  if (item.tags?.includes('spring')) result.push({ tag: 'clockwork', text: `−${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% кулдауна` });
+  if (item.tags?.includes('clockwork')) result.push({ tag: 'spring', text: `−${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% кулдауна` });
+  if (item.tags?.includes('scope')) result.push({ tag: 'firearm', text: `+${SYNERGY_RULES.scopeDamage} урона` });
+  if (item.tags?.includes('firearm')) result.push({ tag: 'scope', text: `+${SYNERGY_RULES.scopeDamage} урона` });
+  if (item.definitionId === 'lantern' && !item.calmed) result.push({ tag: 'blade', text: `+${Math.round(SYNERGY_RULES.jealousCooldownIncrease * 100)}% кулдауна`, negative: true });
   return result;
 }
 

@@ -1,6 +1,6 @@
 import type Phaser from 'phaser';
 import { RUN_ROOM_COUNT } from '../combat/run.ts';
-import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape, synergyTargets, SYNERGY_TAG_LABELS } from '../combat/inventory.ts';
+import { areAdjacent, INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape, synergyTargets, SYNERGY_TAG_LABELS } from '../combat/inventory.ts';
 import { attributeModifier, chooseHeroTarget, heroArmor, heroClassForActor, MAX_ARMOR, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ACTOR_ROWS, actorStateFrame, stoppedDollTransform, CLASS_ITEM_ART, type ActorSpriteId, type ActorSpriteState } from '../presentation/ArtCatalog.ts';
@@ -43,6 +43,11 @@ const itemCatalog = CLASS_ITEM_ART;
 const itemFrames: Record<string, number> = Object.fromEntries(Object.entries(itemCatalog).map(([id, art]) => [id, art.frame]));
 const itemAtlases: Record<string, string> = Object.fromEntries(Object.entries(itemCatalog).map(([id, art]) => [id, art.atlas]));
 const rarityTints = [0x85868b, 0x45a45c, 0x428bdb, 0xa65bd2, 0xd6a52e] as const;
+const controlIcons = new Set(['⚙', '↻', '?', '⛶']);
+const synergyRelationLabels: Record<string, string> = {
+  blade: 'КЛИНОК', whetstone: 'КАМЕНЬ', clockwork: 'МЕХАНИЗМ', spring: 'ПРУЖИНА',
+  firearm: 'ОРУЖИЕ', scope: 'ПРИЦЕЛ', support: 'ПОДДЕРЖКА', glass: 'СТЕКЛО', bell: 'КОЛОКОЛ',
+};
 const puppetBranchLabels = { theatrical: 'Кукольно-театральная', mechanical: 'Механико-стимпанковая', mystical: 'Религиозно-мистическая' } as const;
 const rarityLabels: Record<NonNullable<CombatItem['rarity']>, string> = { common: 'ОБЫЧНОЕ', uncommon: 'НЕОБЫЧНОЕ', rare: 'РЕДКОЕ', epic: 'МИФИЧЕСКОЕ', legendary: 'ЛЕГЕНДАРНОЕ' };
 const categoryLabels: Record<NonNullable<CombatItem['category']>, string> = { weapon: 'ОРУЖИЕ', protection: 'ЗАЩИТА', jewelry: 'УКРАШЕНИЕ', relic: 'РЕЛИКВИЯ', tool: 'ИНСТРУМЕНТ', consumable: 'ПРИПАС', ammo: 'БОЕПРИПАС' };
@@ -158,7 +163,7 @@ export class PhaserHUD {
       this.tooltips.hide();
       this.openingModal();
       if (this.ui.optionsOpen) this.optionsDialog();
-      this.text(GAME_VERSION, 8, this.height - 15, 10, '#aaa3aa').setAlpha(.65);
+      this.versionStamp();
       return;
     }
     if (this.ui.run.stage !== 'battle') this.pendingActorEvents = [];
@@ -173,8 +178,8 @@ export class PhaserHUD {
       const label = this.text('ПАУЗА', x + w / 2, y + h / 2, 12, '#f5ddab', w - 24, .5);
       label.setOrigin(.5, .5);
     }
-    this.text(GAME_VERSION, 8, this.height - 15, 10, '#aaa3aa').setAlpha(.65);
-    if (!drag) this.itemSpeech();
+    this.versionStamp();
+    if (!drag && !this.hover) this.itemSpeech();
     if (drag) this.drawDrag(drag);
     if (this.ui.confirmReset) this.resetDialog();
     if (this.ui.helpOpen) this.helpDialog();
@@ -188,6 +193,12 @@ export class PhaserHUD {
       const x = Math.max(6, Math.min(this.width - 150, notice.x - 70));
       this.panelTexture(x, y, 146, 26); this.text(notice.text, x + 73, y + 6, 12, '#ffe4bd', 138, .5);
     }
+  }
+
+  private versionStamp(): void {
+    this.text(GAME_VERSION, 8, this.height - 23, 11, '#b9b1bc')
+      .setAlpha(.82)
+      .setStroke('#100b10', 2);
   }
 
   /** Reapply draw order when objects are reused for a different role on the next frame. */
@@ -296,7 +307,16 @@ export class PhaserHUD {
           tags: [...tags].reverse().map((label, index) => ({ label, color: ['#86ddb5', '#e3ba75', '#a5baf1'][index % 3]! })),
           summary: stat ? `${icon} ${stat} ${damageLabel ? `(${damageLabel})` : ''} ${item.cooldownMs ? `· ⏱ ${cooldown}` : ''}` : '',
           description: [item.description ?? '', item.classAffinity ? `${ITEM_CLASS_LABELS[item.classAffinity]} · эффект +${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}%.` : '', item.passiveBonuses?.armor ? `Общий предел брони: ${MAX_ARMOR}.` : ''].filter(Boolean).join('\n'),
-          relations: relations.map(rule => ({ label: SYNERGY_TAG_LABELS[rule.tag] ?? rule.tag.toUpperCase(), detail: rule.text, color: rule.negative ? '#ef9e70' : '#86ddb5' })),
+          relations: relations.map(rule => {
+            const active = hero?.items.some(candidate => candidate.id !== item.id
+              && candidate.tags?.includes(rule.tag) && areAdjacent(item, candidate)) ?? false;
+            return {
+              label: synergyRelationLabels[rule.tag] ?? SYNERGY_TAG_LABELS[rule.tag] ?? rule.tag.toUpperCase(),
+              detail: rule.text,
+              color: rule.negative ? '#ef9e70' : active ? '#86ddb5' : '#d8bb82',
+              active,
+            };
+          }),
         };
         this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, zone);
         return;
@@ -411,10 +431,11 @@ export class PhaserHUD {
 
   private button(label: string, x: number, y: number, width: number, height: number, action: string, value = '', primary = false): void {
     const hot = this.hover?.action === action && this.hover.value === value;
+    const isControlIcon = controlIcons.has(label);
     if (this.scene.textures.exists('ui-button-plate')) {
       const capWidth = Math.min(width * .28, height * 300 / 404);
       const centerWidth = Math.max(1, width - capWidth * 2);
-      const tint = hot ? 0xfff1d4 : primary ? 0xffffff : 0xd0c1a8;
+      const tint = hot ? 0xfff1d4 : isControlIcon ? 0xf3dcb8 : primary ? 0xffffff : 0xd0c1a8;
       const plate = [
         this.acquireImage(x, y, 'ui-button-plate', 'left-cap').setOrigin(0).setDisplaySize(capWidth, height),
         this.acquireImage(x + capWidth, y, 'ui-button-plate', 'center').setOrigin(0).setDisplaySize(centerWidth, height),
@@ -433,8 +454,11 @@ export class PhaserHUD {
       g.lineStyle(1, primary ? 0xe7bf72 : 0x8a755c, 1).strokeRoundedRect(x, y, width, height, 5);
       this.addToRoot(g);
     }
-    if (['⚙', '↻', '?', '⛶'].includes(label)) {
-      const icon = this.acquireText(x + width / 2, y + height / 2, label, { fontFamily: 'Georgia, serif', fontSize: `${Math.round(height * .55)}px`, color: hot ? '#fff2d5' : '#d9c09a', stroke: '#171414', strokeThickness: 1, resolution: 2 }).setOrigin(.5);
+    if (isControlIcon) {
+      const icon = this.acquireText(x + width / 2, y + height / 2, label, {
+        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(height * .68)}px`,
+        color: hot ? '#fff8e8' : '#f4dfba', stroke: '#171014', strokeThickness: 2, resolution: 2,
+      }).setOrigin(.5);
       this.addToRoot(icon);
     }
     else {
@@ -538,8 +562,8 @@ export class PhaserHUD {
       const gridX = boardX + boardSize * (layout.tray[0] + layout.tray[2] / 2) - gridSize / 2;
       const gridY = boardY + boardSize * (layout.tray[1] + layout.tray[3] / 2) - gridSize / 2;
       const availableInfoWidth = Math.max(1, gridX - (boardX + boardSize * .07));
-      const infoSize = Math.min(38, boardSize * .13, Math.max(1, availableInfoWidth - 4));
-      const infoX = boardX + boardSize * .07 + (availableInfoWidth - infoSize) / 2, infoY = gridY + (gridSize - infoSize) / 2;
+      const infoSize = Math.min(42, boardSize * .15, Math.max(1, availableInfoWidth - 2));
+      const infoX = boardX + Math.max(4, boardSize * .035), infoY = gridY + (gridSize - infoSize) / 2;
       this.button('', infoX, infoY, infoSize, infoSize, 'hero-info', hero.id);
       const infoGlyph = this.acquireText(infoX + infoSize / 2, infoY + infoSize / 2, 'i', {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(infoSize * .67)}px`,
@@ -580,6 +604,7 @@ export class PhaserHUD {
       if (relations.length && sourceCells.length) {
         const glow = this.acquireGraphics();
         const around = new Set<number>();
+        const activeTargets = new Map<string, { item: CombatItem; negative: boolean }>();
         for (const index of sourceCells) for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
           const col = inventoryColumn(index) + dx!, row = inventoryRow(index) + dy!;
           if (col >= 0 && col < INVENTORY_GRID_SIZE && row >= 0 && row < INVENTORY_GRID_SIZE) {
@@ -590,12 +615,32 @@ export class PhaserHUD {
         for (const index of around) {
           const neighbour = hero.items.find(item => item.id !== inspected?.id && occupiedCells(item, item.cell ?? 0)?.includes(index));
           const match = relations.find(rule => neighbour?.tags?.includes(rule.tag));
+          if (match && neighbour) activeTargets.set(neighbour.id, { item: neighbour, negative: !!match.negative });
           const color = match?.negative ? 0xf09d58 : match ? 0x78f2ad : 0xe3bf72;
           const cx = gridX + inventoryColumn(index) * cell, cy = gridY + inventoryRow(index) * cell;
           glow.fillStyle(color, match ? .26 : .12).fillRect(cx + 1, cy + 1, cell - 2, cell - 2);
           glow.lineStyle(match ? 2 : 1, color, match ? 1 : .7).strokeRect(cx + 1, cy + 1, cell - 2, cell - 2);
         }
         this.addToRoot(glow);
+        for (const { item: target, negative } of activeTargets.values()) {
+          const cells = occupiedCells(target, target.cell ?? 0);
+          if (!cells?.length) continue;
+          const topRight = cells.reduce((best, index) => inventoryRow(index) < inventoryRow(best)
+            || inventoryRow(index) === inventoryRow(best) && inventoryColumn(index) > inventoryColumn(best) ? index : best);
+          const markerRadius = Math.min(5, cell * .25);
+          const markerX = gridX + (inventoryColumn(topRight) + 1) * cell - markerRadius - 1;
+          const markerY = gridY + inventoryRow(topRight) * cell + markerRadius + 1;
+          const markerColor = negative ? 0xf09d58 : 0x9bf0ba;
+          const marker = this.acquireGraphics();
+          marker.fillStyle(0x162018, .96).fillCircle(markerX, markerY, markerRadius);
+          marker.lineStyle(1, markerColor, .95).strokeCircle(markerX, markerY, markerRadius);
+          this.addToRoot(marker);
+          this.addToRoot(this.acquireText(markerX, markerY, '✓', {
+            fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.max(5, Math.floor(markerRadius * 1.4))}px`,
+            color: negative ? '#ffd3ad' : '#d8ffe5',
+            stroke: '#10140f', strokeThickness: 1, resolution: 2,
+          }).setOrigin(.5));
+        }
       }
       if (hero.status === 'rebirthing') {
         const dim = this.acquireGraphics().fillStyle(0x070a0f, .37).fillRect(gridX, gridY, gridSize, gridSize);
@@ -1215,9 +1260,9 @@ export class PhaserHUD {
       const textX = iconWell.x + iconWell.width + (cardCompact ? 12 : 18), textWidth = Math.max(50, w - (textX - x) - 12);
       this.panelTexture(x, y, w, height);
       const g = this.acquireGraphics();
-      g.fillStyle(color, hot ? .25 : .14).fillRoundedRect(x + 2, y + 2, w - 4, height - 4, 5);
-      g.lineStyle(hot ? 2 : 1, hot ? mixTint(color, 0xfff0d0, .28) : color, .8).strokeRoundedRect(x, y, w, height, 6);
-      g.lineStyle(1, 0xe2c18a, hot ? .82 : .58).strokeRoundedRect(x + 4, y + 4, w - 8, height - 8, 4);
+      g.fillStyle(color, hot ? .22 : .08).fillRoundedRect(x + 2, y + 2, w - 4, height - 4, 5);
+      g.lineStyle(hot ? 2 : 1, hot ? mixTint(color, 0xfff0d0, .28) : color, hot ? .8 : .48).strokeRoundedRect(x, y, w, height, 6);
+      if (hot) g.lineStyle(1, 0xe2c18a, .58).strokeRoundedRect(x + 4, y + 4, w - 8, height - 8, 4);
       this.addToRoot(g);
       this.panelTexture(iconWell.x, iconWell.y, iconWell.width, iconWell.height);
       this.frameCorners(x, y, w, height, Math.min(compact ? 24 : 40, height * .3), .95);
@@ -1299,7 +1344,7 @@ export class PhaserHUD {
         this.addToRoot(statLabel);
       }
       this.zones.push({ x, y, width: w, height, action: 'claim', value: item.id, itemId: item.id, reward: true });
-      this.button('Взять', ctaX, y + (height - ctaH) / 2, ctaW, ctaH, 'claim', item.id, true);
+      this.button('Взять', ctaX, y + (height - ctaH) / 2, ctaW, ctaH, 'claim', item.id);
     });
   }
 

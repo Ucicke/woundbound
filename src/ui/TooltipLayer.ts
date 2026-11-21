@@ -1,7 +1,7 @@
 import type Phaser from 'phaser';
 
 export interface TooltipTag { label: string; color: string }
-export interface TooltipRelation { label: string; detail: string; color: string }
+export interface TooltipRelation { label: string; detail: string; color: string; active?: boolean }
 export interface ItemTooltipContent {
   key: string;
   title: string;
@@ -39,7 +39,7 @@ export class TooltipLayer {
       ...relation,
       detail: truncate(relation.detail, compact ? 92 : 140),
     }));
-    const key = `${content.key}|${content.title}|${content.tags.map(tag => tag.label).join(',')}|${bodyCopy}|${relations.map(relation => `${relation.label}:${relation.detail}`).join('|')}|${width}|${screenHeight}`;
+    const key = `${content.key}|${content.title}|${content.tags.map(tag => tag.label).join(',')}|${bodyCopy}|${relations.map(relation => `${relation.active ? 1 : 0}:${relation.label}:${relation.detail}`).join('|')}|${width}|${screenHeight}`;
     if (key === this.contentKey) {
       this.moveTo(pointerX, pointerY, screenWidth, screenHeight);
       return;
@@ -50,7 +50,7 @@ export class TooltipLayer {
       fontFamily: 'Georgia, serif', fontSize: compact ? '12px' : '15px', lineSpacing: compact ? 2 : 3,
       color: '#e6d8c4', wordWrap: { width: textWidth }, resolution: 2,
     });
-    const relationRows = relations.map(relation => this.scene.add.text(0, 0, `${relation.label} · ${relation.detail}`, {
+    const relationRows = relations.map(relation => this.scene.add.text(0, 0, `${relation.active ? '✓' : '◇'} ${relation.label} · ${relation.detail}`, {
       fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compact ? '12px' : '14px', lineSpacing: compact ? 1 : 2,
       color: relation.color, wordWrap: { width: textWidth }, resolution: 2,
     }));
@@ -161,6 +161,13 @@ export class TooltipLayer {
       const aboveY = anchor.y - this.boxHeight - gap;
       const belowY = anchor.y + anchor.height + gap;
       const y = aboveY >= topInset ? aboveY : Math.max(topInset, Math.min(maxY, belowY));
+      this.root.setPosition(x, y).setVisible(true);
+      return;
+    }
+
+    if (anchor && screenWidth < 520 && screenHeight >= 520) {
+      const x = Math.max(margin, Math.min(maxX, (screenWidth - this.boxWidth) / 2));
+      const y = Math.max(topInset, Math.min(maxY, screenHeight * .6));
       this.root.setPosition(x, y).setVisible(true);
       return;
     }

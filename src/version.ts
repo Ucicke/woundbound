@@ -1,2 +1,2 @@
 /** Player-facing version: package version followed by a fourth component. */
-export const GAME_VERSION = '0.1.7.0';
+export const GAME_VERSION = '0.1.8.0';
