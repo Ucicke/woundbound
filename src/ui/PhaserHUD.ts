@@ -318,7 +318,10 @@ export class PhaserHUD {
             };
           }),
         };
-        this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, zone);
+        this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, {
+          x: zone.x, y: zone.y, width: zone.width, height: zone.height, reward: zone.reward,
+          safeTop: this.compactLayout && !zone.reward ? this.field.y : undefined,
+        });
         return;
       }
     }

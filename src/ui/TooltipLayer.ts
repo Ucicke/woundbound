@@ -11,7 +11,14 @@ export interface ItemTooltipContent {
   relations: TooltipRelation[];
 }
 
-interface TooltipAnchor { x: number; y: number; width: number; height: number; reward?: boolean }
+interface TooltipAnchor {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  reward?: boolean;
+  safeTop?: number;
+}
 
 const truncate = (value: string, maxLength: number): string =>
   value.length > maxLength ? `${value.slice(0, maxLength - 1).trimEnd()}…` : value;
@@ -56,8 +63,8 @@ export class TooltipLayer {
     }));
     const contentHeight = body.height + (bodyCopy && relationRows.length ? 8 : 0)
       + relationRows.reduce((total, row) => total + row.height + (compact ? 6 : 8), 0);
-    const contentTop = 82;
-    const bottomInset = 36;
+    const contentTop = 70;
+    const bottomInset = 20;
     const topInset = screenHeight < 520 ? 60 : 8;
     const maxHeight = Math.max(1, screenHeight - topInset - 8);
     const requestedHeight = contentTop + contentHeight + bottomInset;
@@ -167,7 +174,7 @@ export class TooltipLayer {
 
     if (anchor && screenWidth < 520 && screenHeight >= 520) {
       const x = Math.max(margin, Math.min(maxX, (screenWidth - this.boxWidth) / 2));
-      const y = Math.max(topInset, Math.min(maxY, screenHeight * .6));
+      const y = Math.max(topInset, Math.min(maxY, anchor.safeTop ?? screenHeight * .6));
       this.root.setPosition(x, y).setVisible(true);
       return;
     }
