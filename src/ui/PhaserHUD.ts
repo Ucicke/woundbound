@@ -15,7 +15,7 @@ import { TooltipLayer, type ItemTooltipContent } from './TooltipLayer.ts';
 
 export interface UIZone {
   x: number; y: number; width: number; height: number;
-  action?: string; value?: string; itemId?: string; actorId?: string; heroId?: string; cell?: number; reward?: boolean; tooltipBounds?: { x: number; y: number; width: number; height: number }; stash?: boolean; floorDrop?: boolean;
+  action?: string; value?: string; itemId?: string; actorId?: string; heroId?: string; cell?: number; tooltipBounds?: { x: number; y: number; width: number; height: number }; stash?: boolean; floorDrop?: boolean;
 }
 export interface DragPreview { item: CombatItem; x: number; y: number; heroId?: string; anchor?: number; valid?: boolean }
 
@@ -332,9 +332,9 @@ export class PhaserHUD {
           }),
         };
         this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, {
-          x: zone.x, y: zone.y, width: zone.width, height: zone.height, reward: zone.reward,
+          x: zone.x, y: zone.y, width: zone.width, height: zone.height,
           tooltipBounds: zone.tooltipBounds,
-          safeTop: this.compactLayout && !zone.reward ? this.field.y : undefined,
+          safeTop: this.compactLayout ? this.field.y : undefined,
         });
         return;
       }
@@ -372,6 +372,17 @@ export class PhaserHUD {
     this.zones.length = 0;
     this.cells.clear();
     this.scene.cameras.main.resetFX();
+  }
+
+  private inventoryTooltipBounds(): { x: number; y: number; width: number; height: number } {
+    const width = Math.max(1, Math.min(this.left.width - 8, this.width - 16, 380));
+    const height = Math.max(1, Math.min(this.left.height - 8, Math.max(190, Math.min(270, this.height * .36))));
+    return {
+      x: this.left.x + (this.left.width - width) / 2,
+      y: this.left.y + 4,
+      width,
+      height,
+    };
   }
 
   private layout(compact: boolean): void {
@@ -520,6 +531,7 @@ export class PhaserHUD {
     const gap = 7, footerH = this.ui.selectedItem ? (this.compactLayout ? 26 : 31) : 0;
     const cardW = (this.left.width - 12 - gap) / 2, cardH = (this.left.height - 12 - gap - footerH) / 2;
     const compact = this.compactLayout;
+    const itemTooltipBounds = this.ui.run.stage === 'reward' ? this.inventoryTooltipBounds() : undefined;
     for (let h = 0; h < heroes.length; h++) {
       const hero = heroes[h]!;
       const classId = heroClassForActor(hero) ?? 'guard';
@@ -597,8 +609,13 @@ export class PhaserHUD {
         const puppetCell = hero.isPuppet ? getPuppetCellModifiers(hero, i)[0] : undefined;
         if (puppetCell) gridMarks.fillStyle(theme.puppetCellTint, .23).fillRect(cx + 1, cy + 1, cell - 2, cell - 2);
         const windCard = stopped && this.ui.state.phase === 'combat';
-        this.zones.push({ x: cx, y: cy, width: cell, height: cell, action: windCard ? 'wind' : 'cell', value: windCard ? hero.id : `${hero.id}:${i}`, heroId: hero.id, cell: i,
-          itemId: item && occupied?.includes(i) ? item.id : undefined });
+        const itemId = item && occupied?.includes(i) ? item.id : undefined;
+        this.zones.push({
+          x: cx, y: cy, width: cell, height: cell,
+          action: windCard ? 'wind' : 'cell', value: windCard ? hero.id : `${hero.id}:${i}`,
+          heroId: hero.id, cell: i, itemId,
+          tooltipBounds: itemId ? itemTooltipBounds : undefined,
+        });
         this.cells.set(`${hero.id}:${i}`, { x: cx, y: cy, size: cell });
         if (item && occupied?.includes(i) && isOrigin) itemOrigins.push(item);
       }
@@ -1280,6 +1297,7 @@ export class PhaserHUD {
 
   private rewards(): void {
     const offers = this.ui.run.offers, compact = this.compactLayout;
+    const rewardTooltipBounds = this.inventoryTooltipBounds();
     const gap = compact ? 6 : 10;
     const y0 = this.field.y + 5;
     const available = Math.max(1, this.right.y + this.right.height - (compact ? 14 : 30) - y0);
@@ -1382,8 +1400,8 @@ export class PhaserHUD {
       }
       this.zones.push({ x, y, width: w, height, action: 'claim', value: item.id });
       this.zones.push({
-        ...iconWell, action: 'inspect', value: item.id, itemId: item.id, reward: true,
-        tooltipBounds: { x: textX, y: y + 6, width: Math.max(1, ctaX - textX - 10), height: Math.max(1, height - 12) },
+        ...iconWell, action: 'inspect', value: item.id, itemId: item.id,
+        tooltipBounds: rewardTooltipBounds,
       });
       this.button('Взять', ctaX, y + (height - ctaH) / 2, ctaW, ctaH, 'claim', item.id);
     });
