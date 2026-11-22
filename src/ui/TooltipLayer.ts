@@ -17,6 +17,7 @@ interface TooltipAnchor {
   width: number;
   height: number;
   reward?: boolean;
+  tooltipBounds?: { x: number; y: number; width: number; height: number };
   safeTop?: number;
 }
 
@@ -38,6 +39,10 @@ export class TooltipLayer {
 
   showItem(content: ItemTooltipContent, pointerX: number, pointerY: number, screenWidth: number, screenHeight: number, anchor?: TooltipAnchor): void {
     this.anchor = anchor;
+    if (anchor?.reward && anchor.tooltipBounds) {
+      this.showRewardDetail(content, anchor.tooltipBounds, screenWidth, screenHeight);
+      return;
+    }
     const compact = screenWidth < 520 || screenHeight < 520;
     const widthCap = screenWidth < 520 ? 290 : screenHeight < 520 ? 264 : 400;
     const width = Math.max(1, Math.min(screenWidth - 16, widthCap));
@@ -164,11 +169,12 @@ export class TooltipLayer {
     const maxX = Math.max(margin, screenWidth - this.boxWidth - margin);
     const maxY = Math.max(topInset, screenHeight - this.boxHeight - margin);
     if (anchor.reward) {
-      const x = Math.max(margin, Math.min(maxX, anchor.x + 8));
-      const aboveY = anchor.y - this.boxHeight - gap;
-      const belowY = anchor.y + anchor.height + gap;
-      const y = aboveY >= topInset ? aboveY : Math.max(topInset, Math.min(maxY, belowY));
-      this.root.setPosition(x, y).setVisible(true);
+      if (anchor.tooltipBounds) {
+        this.root.setPosition(anchor.tooltipBounds.x, anchor.tooltipBounds.y).setVisible(true);
+        return;
+      }
+      const x = anchor.x - this.boxWidth - gap;
+      this.root.setPosition(Math.max(margin, Math.min(maxX, x)), Math.max(topInset, Math.min(maxY, anchor.y))).setVisible(true);
       return;
     }
 
@@ -196,6 +202,49 @@ export class TooltipLayer {
   private clearChildren(): void {
     this.root.removeAll(true);
     this.contentKey = '';
+  }
+
+  private showRewardDetail(content: ItemTooltipContent, bounds: NonNullable<TooltipAnchor['tooltipBounds']>, screenWidth: number, screenHeight: number): void {
+    const width = Math.max(1, Math.min(screenWidth - 16, bounds.width));
+    const height = Math.max(1, Math.min(bounds.height, 72));
+    const tiny = height < 58;
+    const key = `${content.key}|reward|${width}|${height}|${content.description}`;
+    const x = Math.max(8, Math.min(screenWidth - width - 8, bounds.x));
+    const y = Math.max(8, Math.min(screenHeight - height - 8, bounds.y));
+    if (key === this.contentKey) {
+      this.root.setPosition(x, y).setVisible(true);
+      return;
+    }
+
+    const title = this.scene.add.text(0, 0, content.title, {
+      fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: tiny ? '10px' : '13px',
+      color: '#fff0d4', resolution: 2, stroke: '#171414', strokeThickness: 2,
+    });
+    const titleWidth = width - 18;
+    if (title.width > titleWidth) title.setScale(titleWidth / title.width);
+    title.setPosition(9, 5);
+
+    const detail = content.description || content.summary;
+    const description = this.scene.add.text(0, 0, truncate(detail, tiny ? 60 : 120), {
+      fontFamily: 'Georgia, serif', fontSize: tiny ? '9px' : '10px', lineSpacing: 1,
+      color: '#e6d8c4', wordWrap: { width: width - 18 }, resolution: 2,
+    });
+    description.setPosition(9, tiny ? 21 : 24);
+    if (description.height > height - description.y - 5) {
+      description.setScale(1, Math.max(0.75, (height - description.y - 5) / description.height));
+    }
+
+    this.clearChildren();
+    const backing = this.scene.add.graphics();
+    backing.fillStyle(0x21171d, .98).fillRoundedRect(4, 4, Math.max(1, width - 8), Math.max(1, height - 8), 4);
+    this.root.add(backing);
+    this.addPanel(width, height);
+    this.root.add(title);
+    this.root.add(description);
+    this.boxWidth = width;
+    this.boxHeight = height;
+    this.contentKey = key;
+    this.root.setPosition(x, y).setVisible(true);
   }
 
   private addPanel(width: number, height: number): void {

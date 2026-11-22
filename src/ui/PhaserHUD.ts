@@ -1,5 +1,5 @@
 import type Phaser from 'phaser';
-import { RUN_ROOM_COUNT } from '../combat/run.ts';
+import { RUN_ROOM_COUNT, type RoomKind, type RunStage } from '../combat/run.ts';
 import { areAdjacent, INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape, synergyTargets, SYNERGY_TAG_LABELS } from '../combat/inventory.ts';
 import { attributeModifier, chooseHeroTarget, heroArmor, heroClassForActor, MAX_ARMOR, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { ITEM_CLASS_LABELS } from '../combat/items.ts';
@@ -15,7 +15,7 @@ import { TooltipLayer, type ItemTooltipContent } from './TooltipLayer.ts';
 
 export interface UIZone {
   x: number; y: number; width: number; height: number;
-  action?: string; value?: string; itemId?: string; actorId?: string; heroId?: string; cell?: number; reward?: boolean; stash?: boolean; floorDrop?: boolean;
+  action?: string; value?: string; itemId?: string; actorId?: string; heroId?: string; cell?: number; reward?: boolean; tooltipBounds?: { x: number; y: number; width: number; height: number }; stash?: boolean; floorDrop?: boolean;
 }
 export interface DragPreview { item: CombatItem; x: number; y: number; heroId?: string; anchor?: number; valid?: boolean }
 
@@ -51,6 +51,13 @@ const synergyRelationLabels: Record<string, string> = {
 const puppetBranchLabels = { theatrical: 'Кукольно-театральная', mechanical: 'Механико-стимпанковая', mystical: 'Религиозно-мистическая' } as const;
 const rarityLabels: Record<NonNullable<CombatItem['rarity']>, string> = { common: 'ОБЫЧНОЕ', uncommon: 'НЕОБЫЧНОЕ', rare: 'РЕДКОЕ', epic: 'МИФИЧЕСКОЕ', legendary: 'ЛЕГЕНДАРНОЕ' };
 const categoryLabels: Record<NonNullable<CombatItem['category']>, string> = { weapon: 'ОРУЖИЕ', protection: 'ЗАЩИТА', jewelry: 'УКРАШЕНИЕ', relic: 'РЕЛИКВИЯ', tool: 'ИНСТРУМЕНТ', consumable: 'ПРИПАС', ammo: 'БОЕПРИПАС' };
+const clearedCopy: Record<RoomKind, { title: string; message: string }> = {
+  battle: { title: 'Тишина после боя', message: 'Враги повержены.' },
+  cache: { title: 'Тайник обыскан', message: 'Трофеи собраны.' },
+  workshop: { title: 'Мастерская завершена', message: 'Работа окончена.' },
+  event: { title: 'Передышка завершена', message: 'Выбор сделан.' },
+  boss: { title: 'Враг повержен', message: 'Враг повержен.' },
+};
 function itemRarityTint(rarity: CombatItem['rarity']): number {
   const tier = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4 }[rarity ?? 'common'];
   return rarityTints[tier]!;
@@ -98,6 +105,7 @@ export class PhaserHUD {
   private clickNotice?: { x: number; y: number; text: string; until: number };
   private displayedHealth = new Map<string, { value: number; at: number }>();
   private currentRoom = 0;
+  private currentStage?: RunStage;
   private priorRoomDead = new Set<string>();
   private openingHover = 0;
   private openingHoverAt = 0;
@@ -154,6 +162,11 @@ export class PhaserHUD {
     if (this.currentRoom !== this.ui.run.room) {
       if (this.currentRoom) for (const hero of this.ui.state.heroes) if (hero.status === 'dead') this.priorRoomDead.add(hero.id);
       this.currentRoom = this.ui.run.room;
+    }
+    if (this.currentStage !== this.ui.run.stage) {
+      this.currentStage = this.ui.run.stage;
+      this.clickNotice = undefined;
+      this.tooltips.hide();
     }
     this.hover = this.zoneAt(pointerX, pointerY);
     this.beginFrame();
@@ -320,6 +333,7 @@ export class PhaserHUD {
         };
         this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, {
           x: zone.x, y: zone.y, width: zone.width, height: zone.height, reward: zone.reward,
+          tooltipBounds: zone.tooltipBounds,
           safeTop: this.compactLayout && !zone.reward ? this.field.y : undefined,
         });
         return;
@@ -840,7 +854,7 @@ export class PhaserHUD {
   private room(drag?: DragPreview): void {
     const run = this.ui.run;
     if (run.stage !== 'victory') {
-      const title = run.stage === 'defeat' ? 'Конец пути' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? 'Тишина после боя' : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
+      const title = run.stage === 'defeat' ? 'Конец пути' : run.stage === 'reward' ? 'Трофеи из пепла' : run.stage === 'cleared' ? clearedCopy[run.current].title : run.stage === 'route' ? 'Выберите следующий след' : run.stage === 'cache' ? 'Забытый тайник' : run.stage === 'workshop' ? 'Часовая мастерская' : run.stage === 'event' ? 'Лазарет забытого братства' : run.roomLabel;
       this.panelTexture(this.right.x + 5, this.right.y + 3, this.right.width - 10, 27);
       if (run.stage !== 'opening') {
         const heading = this.titleText(title, this.right.x + this.right.width / 2, this.right.y + 16, this.compactLayout ? 15 : 19, '#f2d39a', this.right.width - 48, .5);
@@ -982,6 +996,7 @@ export class PhaserHUD {
     const actionTarget = action && allActors.find(candidate => candidate.id === action.targetId);
     const actionItem = action?.kind === 'item' ? this.ui.state.heroes.flatMap(hero => hero.items).find(item => item.id === action.sourceId) : undefined;
     const friendlyAction = actionItem?.effect === 'heal' || actionItem?.effect === 'wind';
+    const enemyCount = this.ui.state.enemies.length;
     const heroFormation = new Map<string, { lane: 'front' | 'rear'; rank: number; count: number }>();
     const laneCounts = { front: 0, rear: 0 };
     for (const hero of [...this.ui.state.heroes].sort((a, b) => a.slot - b.slot)) {
@@ -993,15 +1008,21 @@ export class PhaserHUD {
     const actorPosition = (actor: Combatant, hero: boolean, index: number): { x: number; y: number; scale: number } => {
       const intent = projectRoleIntent(actor, enemyTarget);
       const formation = hero ? heroFormation.get(actor.id) : undefined;
-      const depth = hero ? (intent.lane === 'front' ? .74 : .49) : .38 + Math.floor(index / 2) * .28 + (index % 2) * .12;
+      let depth = .6;
+      if (hero) depth = intent.lane === 'front' ? .74 : .49;
+      else if (actor.isBoss) depth = .66;
+      else if (enemyCount > 1) depth = .27 + index / (enemyCount - 1) * .55;
       const baseY = ground.top + (ground.bottom - ground.top) * Math.max(.08, Math.min(.95, depth));
-      let x = hero
-        ? ground.left + (ground.right - ground.left) * (intent.lane === 'front' ? .55 + ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * .1 : .34 + ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * .12)
-        : ground.right - (ground.right - ground.left) * (.2 + (index % 2) * .15 + Math.floor(index / 2) * .04);
-      const y = baseY + (hero ? ((formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2) * this.field.height * .035 : 0);
+      const rankOffset = (formation?.rank ?? 0) - ((formation?.count ?? 1) - 1) / 2;
+      const horizontalProgress = intent.lane === 'front' ? .52 + rankOffset * .1 : .22 + rankOffset * .16;
+      const enemyProgress = .73 + (index % 2) * .14 + Math.floor(index / 2) * .03;
+      const x = hero
+        ? ground.left + (ground.right - ground.left) * horizontalProgress
+        : ground.left + (ground.right - ground.left) * enemyProgress;
+      const y = baseY + (hero ? rankOffset * this.field.height * .1 : 0);
       const hostile = actionTarget && actionTarget.side !== actor.side;
       const nearFront = hero ? actor.role === 'guard' : (actor.reach ?? 'near') === 'near';
-      const lunge = action?.actorId === actor.id && hostile && nearFront ? (hero ? 1 : -1) * this.field.width * .085 * Math.sin(Math.PI * (1 - (this.ui.highlightUntil - now) / 700)) : 0;
+      const lunge = action?.actorId === actor.id && hostile && nearFront ? (hero ? 1 : -1) * this.field.width * .045 * Math.sin(Math.PI * (1 - (this.ui.highlightUntil - now) / 700)) : 0;
       return { x: Math.max(ground.left, Math.min(ground.right, x + lunge)), y: Math.max(ground.top, Math.min(ground.bottom, y)), scale: .76 + (baseY - ground.top) / Math.max(1, ground.bottom - ground.top) * .44 };
     };
     const units = [...this.ui.state.heroes.filter(actor => !this.priorRoomDead.has(actor.id)).map((actor, index) => ({ actor, hero: true, index })), ...this.ui.state.enemies.map((actor, index) => ({ actor, hero: false, index }))];
@@ -1009,18 +1030,31 @@ export class PhaserHUD {
       const position = actorPosition(unit.actor, unit.hero, unit.index);
       positions.set(unit.actor.id, { ...position, actor: unit.actor, hero: unit.hero, index: unit.index });
     }
-    // Keep active actors' feet apart on the ground plane while allowing front and rear rows to overlap in depth.
+    // Separate visible body footprints while preserving the front/rear depth rows.
     const standing = [...positions.values()].filter(position => position.actor.status !== 'dead' && position.actor.status !== 'rebirthing');
     const baseSize = Math.min(this.compactLayout ? 132 : 220, this.field.height * (this.compactLayout ? .4 : .39));
-    for (let pass = 0; pass < 6; pass++) {
+    for (const position of standing) {
+      const margin = baseSize * position.scale * .32;
+      position.x = Math.max(ground.left + margin, Math.min(ground.right - margin, position.x));
+    }
+    for (let pass = 0; pass < 8; pass++) {
       for (let i = 0; i < standing.length; i++) for (let j = i + 1; j < standing.length; j++) {
         const a = standing[i]!, b = standing[j]!;
-        const separation = baseSize * (a.scale + b.scale) * .30;
-        if (Math.abs(a.y - b.y) > baseSize * (a.scale + b.scale) * .12 || Math.abs(a.x - b.x) >= separation) continue;
-        const direction = a.x === b.x ? (a.index <= b.index ? -1 : 1) : Math.sign(a.x - b.x);
-        const shift = (separation - Math.abs(a.x - b.x)) / 2;
-        a.x = Math.max(ground.left, Math.min(ground.right, a.x + direction * shift));
-        b.x = Math.max(ground.left, Math.min(ground.right, b.x - direction * shift));
+        const sizeA = baseSize * a.scale, sizeB = baseSize * b.scale;
+        const verticalOverlap = (sizeA + sizeB) * .28 - Math.abs(a.y - b.y);
+        if (verticalOverlap <= 0) continue;
+        const separation = (sizeA + sizeB) * .32 + 4;
+        const distanceX = Math.abs(a.x - b.x);
+        if (distanceX >= separation) continue;
+
+        const left = a.x <= b.x ? a : b, right = left === a ? b : a;
+        const overlap = separation - distanceX;
+        const leftRoom = Math.max(0, left.x - ground.left - baseSize * left.scale * .32);
+        const rightRoom = Math.max(0, ground.right - right.x - baseSize * right.scale * .32);
+        const shiftLeft = Math.min(overlap / 2, leftRoom);
+        const shiftRight = Math.min(overlap - shiftLeft, rightRoom);
+        left.x -= shiftLeft;
+        right.x += shiftRight;
       }
     }
     this.root.bringToTop(this.actorLayer);
@@ -1346,7 +1380,11 @@ export class PhaserHUD {
         if (statLabel.width > statWidth) statLabel.setScale(statWidth / statLabel.width);
         this.addToRoot(statLabel);
       }
-      this.zones.push({ x, y, width: w, height, action: 'claim', value: item.id, itemId: item.id, reward: true });
+      this.zones.push({ x, y, width: w, height, action: 'claim', value: item.id });
+      this.zones.push({
+        ...iconWell, action: 'inspect', value: item.id, itemId: item.id, reward: true,
+        tooltipBounds: { x: textX, y: y + 6, width: Math.max(1, ctaX - textX - 10), height: Math.max(1, height - 12) },
+      });
       this.button('Взять', ctaX, y + (height - ctaH) / 2, ctaW, ctaH, 'claim', item.id);
     });
   }
@@ -1377,7 +1415,9 @@ export class PhaserHUD {
     if (this.ui.state.floor.length) {
       this.text(`НА ПОЛУ · ${this.ui.state.floor.length}`, x, y, 11, '#f0cc86', w);
       this.drawLooseItems(this.ui.state.floor, x, y + 19, w);
-    } else this.text('Враги повержены.', x, y, this.compactLayout ? 9 : 13, '#e1cfaf', w);
+    } else {
+      this.text(clearedCopy[this.ui.run.current].message, x, y, this.compactLayout ? 9 : 13, '#e1cfaf', w);
+    }
     this.button('Выбрать следующую комнату', x, this.right.y + this.right.height - 60, w, 50, 'route', '', true);
   }
 
@@ -1395,11 +1435,11 @@ export class PhaserHUD {
 
   private ending(): void {
     const win = this.ui.run.stage === 'victory';
-    const x = this.right.x + 12, y = this.field.y + 26, w = this.right.width - 24;
+    const x = this.right.x + 12, y = this.field.y + 18, w = this.right.width - 24;
     if (!win) {
-      this.panelTexture(x, y - 8, w, 86);
-      this.titleText('Завод остановлен', x + w / 2, y, this.compactLayout ? 20 : 32, '#d3847a', w, .5);
-      this.text('Все куклы разрушены.', x, y + 43, this.compactLayout ? 9 : 13, '#e9d5b5', w);
+      this.panelTexture(x, y, w, 96);
+      this.titleText('Завод остановлен', x + w / 2, y + 28, this.compactLayout ? 20 : 32, '#d3847a', w - 28, .5).setOrigin(.5, .5);
+      this.text('Все куклы разрушены.', x + 14, y + 61, this.compactLayout ? 9 : 13, '#e9d5b5', w - 28);
     }
     this.button('Начать новый забег', x, this.right.y + this.right.height - 76, w, 64, 'restart', '', true);
   }
@@ -1428,6 +1468,7 @@ export class PhaserHUD {
   private itemSpeech(): void {
     const speech = this.ui.dialogue.active;
     if (!speech || speech.expiresAt <= this.now) return;
+    if (this.ui.run.stage !== 'battle' && (speech.trigger === 'kill' || speech.trigger === 'ownerDeath')) return;
     const hero = this.ui.state.heroes.find(candidate => candidate.id === speech.heroId);
     const item = hero?.items.find(candidate => candidate.id === speech.itemId) ?? this.ui.state.floor.find(candidate => candidate.id === speech.itemId);
     if (!hero || !item) return;
