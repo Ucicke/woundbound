@@ -43,12 +43,15 @@ export class TooltipLayer {
       return;
     }
     const compact = screenWidth < 520 || screenHeight < 520;
+    const compactField = compact && anchor?.safeTop !== undefined;
     const widthCap = screenWidth < 520 ? 290 : screenHeight < 520 ? 264 : 400;
     const width = Math.max(1, Math.min(screenWidth - 16, widthCap));
-    const bodyCopy = truncate([content.summary, content.description].filter(Boolean).join('\n'), compact ? 320 : 520);
-    const relations = content.relations.slice(0, compact ? 2 : 3).map(relation => ({
+    const bodyCopy = truncate([content.summary, content.description].filter(Boolean).join('\n'), compactField ? 88 : compact ? 320 : 520);
+    const relationLimit = compactField ? 1 : compact ? 2 : 3;
+    const relationDetailLimit = compactField ? 36 : compact ? 92 : 140;
+    const relations = content.relations.slice(0, relationLimit).map(relation => ({
       ...relation,
-      detail: truncate(relation.detail, compact ? 92 : 140),
+      detail: truncate(relation.detail, relationDetailLimit),
     }));
     const key = `${content.key}|${content.title}|${content.tags.map(tag => tag.label).join(',')}|${bodyCopy}|${relations.map(relation => `${relation.active ? 1 : 0}:${relation.label}:${relation.detail}`).join('|')}|${width}|${screenHeight}`;
     if (key === this.contentKey) {
@@ -58,28 +61,29 @@ export class TooltipLayer {
 
     const textWidth = Math.max(1, width - 72);
     const body = this.scene.add.text(0, 0, bodyCopy, {
-      fontFamily: 'Georgia, serif', fontSize: compact ? '12px' : '15px', lineSpacing: compact ? 2 : 3,
+      fontFamily: 'Georgia, serif', fontSize: compactField ? '10px' : compact ? '12px' : '15px', lineSpacing: compactField ? 0 : compact ? 2 : 3,
       color: '#e6d8c4', wordWrap: { width: textWidth }, resolution: 2,
     });
     const relationRows = relations.map(relation => this.scene.add.text(0, 0, `${relation.active ? '✓' : '◇'} ${relation.label} · ${relation.detail}`, {
-      fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compact ? '12px' : '14px', lineSpacing: compact ? 1 : 2,
+      fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compactField ? '9px' : compact ? '12px' : '14px', lineSpacing: compactField ? 0 : compact ? 1 : 2,
       color: relation.color, wordWrap: { width: textWidth }, resolution: 2,
     }));
     const contentHeight = body.height + (bodyCopy && relationRows.length ? 8 : 0)
       + relationRows.reduce((total, row) => total + row.height + (compact ? 6 : 8), 0);
-    const contentTop = 70;
-    const bottomInset = 20;
+    const contentTop = compactField ? 50 : 70;
+    const bottomInset = compactField ? 10 : 20;
     const topInset = screenHeight < 520 ? 60 : 8;
-    const maxHeight = Math.max(1, screenHeight - topInset - 8);
+    const maxHeight = Math.max(1, Math.min(compactField ? 112 : screenHeight, screenHeight - topInset - 8));
     const requestedHeight = contentTop + contentHeight + bottomInset;
-    const height = Math.min(maxHeight, Math.max(Math.min(112, maxHeight), requestedHeight));
+    const minimumHeight = compactField ? 96 : 112;
+    const height = Math.min(maxHeight, Math.max(Math.min(minimumHeight, maxHeight), requestedHeight));
     const availableContentHeight = Math.max(1, height - contentTop - bottomInset);
     const contentScale = Math.min(1, availableContentHeight / Math.max(1, contentHeight));
 
     this.clearChildren();
     this.addPanel(width, height);
-    this.addTitle(content.title, width, compact);
-    this.addTags(content.tags, width, compact);
+    this.addTitle(content.title, width, compact, compactField);
+    this.addTags(content.tags, width, compact, compactField);
 
     const text = this.scene.add.container(36, contentTop);
     if (bodyCopy) text.add(body);
@@ -130,30 +134,32 @@ export class TooltipLayer {
     this.root.setVisible(false);
   }
 
-  private addTitle(value: string, width: number, compact: boolean): void {
+  private addTitle(value: string, width: number, compact: boolean, compactField = false): void {
     const title = this.scene.add.text(0, 0, value, {
-      fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: compact ? '17px' : '22px',
+      fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: compactField ? '14px' : compact ? '17px' : '22px',
       color: '#fff0d4', resolution: 2, stroke: '#171414', strokeThickness: 2,
     });
     if (title.width > width - 72) title.setScale((width - 72) / title.width);
-    title.setPosition(36, 22);
+    title.setPosition(36, compactField ? 12 : 22);
     this.root.add(title);
   }
 
-  private addTags(tags: TooltipTag[], width: number, compact: boolean): void {
+  private addTags(tags: TooltipTag[], width: number, compact: boolean, compactField = false): void {
     const labels = tags.map(tag => this.scene.add.text(0, 0, tag.label, {
-      fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compact ? '10px' : '12px', color: tag.color, resolution: 2,
+      fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compactField ? '9px' : compact ? '10px' : '12px', color: tag.color, resolution: 2,
     }));
     const availableWidth = Math.max(1, width - 72);
     const unscaledWidth = labels.reduce((total, label) => total + label.width + 14, 0) + Math.max(0, labels.length - 1) * 4;
     const tagScale = Math.min(1, availableWidth / Math.max(1, unscaledWidth));
     const background = this.scene.add.graphics();
+    const tagY = compactField ? 34 : 47;
+    const tagHeight = compactField ? 14 : 18;
     let x = 36;
     labels.forEach(label => {
-      label.setScale(tagScale).setPosition(x + 7 * tagScale, 47 + 2 * tagScale);
+      label.setScale(tagScale).setPosition(x + 7 * tagScale, tagY + 2 * tagScale);
       const tagWidth = label.displayWidth + 14 * tagScale;
-      background.fillStyle(0x17121a, .8).fillRoundedRect(x, 47, tagWidth, 18 * tagScale, 3 * tagScale);
-      background.lineStyle(1, 0x8b765c, .65).strokeRoundedRect(x, 47, tagWidth, 18 * tagScale, 3 * tagScale);
+      background.fillStyle(0x17121a, .8).fillRoundedRect(x, tagY, tagWidth, tagHeight * tagScale, 3 * tagScale);
+      background.lineStyle(1, 0x8b765c, .65).strokeRoundedRect(x, tagY, tagWidth, tagHeight * tagScale, 3 * tagScale);
       x += tagWidth + 4 * tagScale;
     });
     this.root.add(background);
@@ -196,12 +202,16 @@ export class TooltipLayer {
   private showContainedDetail(content: ItemTooltipContent, bounds: NonNullable<TooltipAnchor['tooltipBounds']>, screenWidth: number, screenHeight: number): void {
     const width = Math.max(1, Math.min(bounds.width, screenWidth - 16));
     const maxHeight = Math.max(1, Math.min(bounds.height, screenHeight - 16));
+    const narrow = width < 180;
+    const relationLimit = width < 240 ? 1 : 2;
     const detail = [
       content.summary,
-      content.description,
-      ...content.relations.slice(0, 2).map(relation => `${relation.active ? '✓' : '◇'} ${relation.label} · ${relation.detail}`),
+      narrow ? truncate(content.description, 42) : content.description,
+      ...content.relations.slice(0, relationLimit).map(relation => `${relation.active ? '✓' : '◇'} ${relation.label} · ${truncate(relation.detail, narrow ? 28 : 140)}`),
     ].filter(Boolean).join('\n');
-    const key = `${content.key}|contained|${width}|${maxHeight}|${detail}`;
+    const detailLimit = narrow ? 130 : width < 240 ? 190 : 250;
+    const clippedDetail = truncate(detail, detailLimit);
+    const key = `${content.key}|contained|${width}|${maxHeight}|${clippedDetail}`;
     const x = Math.max(8, Math.min(screenWidth - width - 8, bounds.x));
     const y = Math.max(8, Math.min(screenHeight - maxHeight - 8, bounds.y));
     if (key === this.contentKey) {
@@ -210,27 +220,27 @@ export class TooltipLayer {
     }
 
     const title = this.scene.add.text(0, 0, content.title, {
-      fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: width < 240 ? '12px' : width < 320 ? '15px' : '17px',
+      fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: width < 180 ? '12px' : width < 260 ? '14px' : width < 320 ? '15px' : '17px',
       color: '#fff0d4', resolution: 2, stroke: '#171414', strokeThickness: 2,
     }).setOrigin(.5, 0);
     if (title.width > width - 42) title.setScale((width - 42) / title.width);
     title.setPosition(width / 2, 12);
 
     const tags = this.scene.add.text(0, 0, truncate(content.tags.map(tag => tag.label).join(' · '), 52), {
-      fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: width < 240 ? '8px' : '10px',
+      fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: width < 180 ? '8px' : width < 260 ? '9px' : '10px',
       color: content.tags[0]?.color ?? '#d8bb82', resolution: 2,
     }).setOrigin(.5, 0);
     if (tags.width > width - 36) tags.setScale((width - 36) / tags.width);
     tags.setPosition(width / 2, 37);
 
-    const body = this.scene.add.text(0, 0, truncate(detail, 250), {
-      fontFamily: 'Georgia, serif', fontSize: width < 240 ? '8px' : width < 320 ? '10px' : '11px', lineSpacing: 1,
+    const body = this.scene.add.text(0, 0, clippedDetail, {
+      fontFamily: 'Georgia, serif', fontSize: width < 180 ? '8px' : width < 260 ? '9px' : width < 320 ? '10px' : '11px', lineSpacing: 1,
       color: '#e6d8c4', wordWrap: { width: width - 36 }, resolution: 2,
     });
     body.setPosition(18, 57);
     const height = Math.min(maxHeight, Math.max(118, body.y + body.height + 12));
     const availableHeight = Math.max(1, height - body.y - 12);
-    if (body.height > availableHeight) body.setScale(1, Math.max(.72, availableHeight / body.height));
+    if (body.height > availableHeight) body.setScale(1, availableHeight / body.height);
 
     this.clearChildren();
     const backing = this.scene.add.graphics();

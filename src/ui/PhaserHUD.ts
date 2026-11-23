@@ -375,13 +375,22 @@ export class PhaserHUD {
   }
 
   private inventoryTooltipBounds(): { x: number; y: number; width: number; height: number } {
-    const width = Math.max(1, Math.min(this.left.width - 8, this.width - 16, 380));
-    const height = Math.max(1, Math.min(this.left.height - 8, Math.max(190, Math.min(270, this.height * .36))));
+    const { width: cardWidth, height: cardHeight } = this.partyCardSize();
+    const inset = Math.max(3, Math.round(Math.min(cardWidth, cardHeight) * .025));
     return {
-      x: this.left.x + (this.left.width - width) / 2,
-      y: this.left.y + 4,
-      width,
-      height,
+      x: this.left.x + 6 + inset,
+      y: this.left.y + 6 + inset,
+      width: Math.max(1, cardWidth - inset * 2),
+      height: Math.max(1, cardHeight - inset * 2),
+    };
+  }
+
+  private partyCardSize(): { width: number; height: number } {
+    const gap = 7;
+    const footer = this.ui.selectedItem ? (this.compactLayout ? 26 : 31) : 0;
+    return {
+      width: Math.max(1, (this.left.width - 12 - gap) / 2),
+      height: Math.max(1, (this.left.height - 12 - gap - footer) / 2),
     };
   }
 
@@ -528,8 +537,7 @@ export class PhaserHUD {
   private party(drag?: DragPreview): void {
     const g = this.acquireGraphics(); this.addToRoot(g);
     const heroes = [...this.ui.state.heroes].sort((a, b) => a.slot - b.slot);
-    const gap = 7, footerH = this.ui.selectedItem ? (this.compactLayout ? 26 : 31) : 0;
-    const cardW = (this.left.width - 12 - gap) / 2, cardH = (this.left.height - 12 - gap - footerH) / 2;
+    const gap = 7, { width: cardW, height: cardH } = this.partyCardSize();
     const compact = this.compactLayout;
     const itemTooltipBounds = this.ui.run.stage === 'reward' ? this.inventoryTooltipBounds() : undefined;
     for (let h = 0; h < heroes.length; h++) {
