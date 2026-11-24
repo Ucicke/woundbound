@@ -157,6 +157,16 @@ describe('complete run', () => {
     expect(human.hp).toBe(human.maxHp); expect(doll.hp).toBe(0); expect(dead.hp).toBe(0);
   });
 
+  it('allows leaving an infirmary with no eligible treatment', () => {
+    const run = createRun(createFullEncounter());
+    run.transition({ stage: 'event', current: 'event', roomLabel: 'Лазарет' });
+    expect(resolveInfirmary(run, 'repair')).toBe(false);
+    expect(resolveInfirmary(run, 'heal')).toBe(false);
+    expect(run.stage).toBe('event');
+    expect(resolveInfirmary(run, 'leave')).toBe(true);
+    expect(openRoute(run)).toBe(true);
+  });
+
   it('can win a normal-number route using rewards, workshops and manual winding', () => {
     const encounter = createFullEncounter(); prepareEncounter(encounter);
     const run = createRun(encounter, () => 0);

@@ -144,7 +144,7 @@ export class GameUI {
   dropToStash(itemId: string): boolean {
     if (!storeItem(this.state, itemId)) return false;
     if (this.selectedItem === itemId) this.selectedItem = null;
-    this.message = 'Предмет оставлен на полу'; return true;
+    this.message = 'Предмет передан отряду'; return true;
   }
 
   rotateItem(itemId: string): boolean {
@@ -191,11 +191,17 @@ export class GameUI {
         this.selectedItem = null; this.message = '';
         if (this.run.stage === 'battle') this.prepareFastEncounter();
       }
-    } else if (name === 'claim') { if (claimReward(this.run, value)) this.message = 'Предмет лежит на полу'; }
+    } else if (name === 'claim') { if (claimReward(this.run, value)) this.message = 'Предмет в общей добыче'; }
     else if (name === 'workshop-wind') { if (windWorkshop(this.run)) this.message = 'Завод восстановлен; прочность не изменилась'; }
     else if (name === 'calm') { if (calmWorkshopItem(this.run, value)) this.message = 'Предмет успокоен'; }
-    else if (name === 'leave-workshop') { if (leaveWorkshop(this.run)) this.message = 'Работа мастерской завершена'; }
-    else if (name === 'event-choice') { if (resolveInfirmary(this.run, value)) this.message = value === 'heal' ? 'Люди получили лечение' : 'Куклы починены'; }
+    else if (name === 'leave-workshop' && leaveWorkshop(this.run)) {
+      this.message = '';
+      if (!this.state.floor.length) openRoute(this.run);
+    }
+    else if (name === 'event-choice' && resolveInfirmary(this.run, value)) {
+      this.message = '';
+      if (!this.state.floor.length) openRoute(this.run);
+    }
     else if (name === 'store') this.dropToStash(value);
     else if (name === 'wind') queueWinding(this.state, value);
     else if (name === 'help') this.helpOpen = !this.helpOpen;

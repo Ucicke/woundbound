@@ -198,11 +198,27 @@ export function leaveWorkshop(run: RunState): boolean {
 }
 
 /** The infirmary offers one mutually exclusive benefit, once per visit. */
+function infirmaryTargets(run: RunState, choice: 'heal' | 'repair') {
+  return run.encounter.heroes.filter(hero => choice === 'heal'
+    ? hero.status === 'human' && hero.hp < hero.maxHp
+    : (hero.status === 'stopped' || hero.status === 'active') && hero.durability < hero.maxDurability);
+}
+
+export function canUseInfirmary(run: RunState, choice: 'heal' | 'repair'): boolean {
+  return run.stage === 'event' && infirmaryTargets(run, choice).length > 0;
+}
+
 export function resolveInfirmary(run: RunState, choice: string): boolean {
-  if (run.stage !== 'event' || (choice !== 'heal' && choice !== 'repair')) return false;
-  for (const hero of run.encounter.heroes) {
-    if (choice === 'heal' && hero.status === 'human') hero.hp = Math.min(hero.maxHp, hero.hp + 15);
-    if (choice === 'repair' && (hero.status === 'stopped' || hero.status === 'active')) hero.durability = Math.min(hero.maxDurability, hero.durability + 15);
+  if (run.stage !== 'event') return false;
+  if (choice === 'heal' || choice === 'repair') {
+    const targets = infirmaryTargets(run, choice);
+    if (!targets.length) return false;
+    for (const hero of targets) {
+      if (choice === 'heal') hero.hp = Math.min(hero.maxHp, hero.hp + 15);
+      else hero.durability = Math.min(hero.maxDurability, hero.durability + 15);
+    }
+  } else if (choice !== 'leave' || canUseInfirmary(run, 'heal') || canUseInfirmary(run, 'repair')) {
+    return false;
   }
   run.transition({ stage: 'cleared', current: 'event', roomLabel: run.roomLabel }); return true;
 }

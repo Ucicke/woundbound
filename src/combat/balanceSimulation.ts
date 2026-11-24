@@ -1,7 +1,7 @@
 import { createFullEncounter } from './encounter.ts';
 import { COMBAT_CONFIG } from './config.ts';
 import { areAdjacent, canPlaceItem, itemBonuses, moveItem, storeItem } from './inventory.ts';
-import { RUN_ROOM_COUNT, createRun, beginRun, calmWorkshopItem, claimReward, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop } from './run.ts';
+import { RUN_ROOM_COUNT, createRun, beginRun, calmWorkshopItem, canUseInfirmary, claimReward, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop } from './run.ts';
 import { heroClassForActor, MAX_ARMOR, prepareEncounter, queueWinding, stepEncounter, type CombatItem, type EncounterState, type ItemClassAffinity } from './simulation.ts';
 
 export type BalanceAgent = 'random' | 'synergy' | 'balanced';
@@ -344,8 +344,12 @@ export function simulateBalanceRun(agent: BalanceAgent, seed: number): BalanceRu
       }
 
       if (choice.kind === 'event') {
+        const preferred = agent === 'random' ? (random() < 0.5 ? 'heal' : 'repair') : infirmaryChoice(state);
+        const alternative = preferred === 'heal' ? 'repair' : 'heal';
+        const treatment = canUseInfirmary(run, preferred) ? preferred
+          : canUseInfirmary(run, alternative) ? alternative : 'leave';
         requireSimulationStep(
-          resolveInfirmary(run, agent === 'random' ? (random() < 0.5 ? 'heal' : 'repair') : infirmaryChoice(state)),
+          resolveInfirmary(run, treatment),
           'resolve the infirmary event', room,
         );
         roomsCleared++;

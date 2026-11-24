@@ -42,6 +42,7 @@ export class CombatScene extends Phaser.Scene {
   preload(): void {
     const asset = assetUrl;
     this.load.image('ui-button-plate', asset('/assets/ui/gothic-button-plate.png'));
+    this.load.image('ui-button-hover-cog', asset('/assets/ui/button-hover-cog.png'));
     this.load.image('ui-tooltip-frame', asset('/assets/ui/gothic-tooltip-frame.png'));
     this.load.image('ui-panel-nine-slice', asset('/assets/ui/gothic-panel-nine-slice.png'));
     this.load.image('ui-descent-button', asset('/assets/ui/descent-button.png'));
@@ -58,8 +59,8 @@ export class CombatScene extends Phaser.Scene {
     }
     this.load.spritesheet('portraits', asset('/assets/source/raw/party-portraits-woundbound-imagegen.png'), { frameWidth: 543, frameHeight: 543 });
     const dashboardAssets = {
-      guard: 'dashboard-guard-status-v2.png', huntress: 'dashboard-huntress-status-v2.png',
-      pilgrim: 'dashboard-pilgrim-status-v2.png', clockmaker: 'dashboard-clockmaker-status-v2.png',
+      guard: 'dashboard-guard-forged.png', huntress: 'dashboard-huntress-status-v2.png',
+      pilgrim: 'dashboard-pilgrim-limestone.png', clockmaker: 'dashboard-clockmaker-status-v2.png',
     } as const;
     for (const [classId, file] of Object.entries(dashboardAssets)) this.load.image(`ui-dashboard-${classId}`, asset(`/assets/ui/${file}`));
     this.load.image('ui-tube-single', asset('/assets/ui/clockmaker-tube-single.png'));
@@ -352,9 +353,15 @@ export class CombatScene extends Phaser.Scene {
           else drag.item.rotation = originalRotation;
         }
       }
-      if (placed) this.gameAudio.play('ui');
+      if (placed) {
+        this.hud.suppressPlacedItemTooltip(drag.item.id);
+        this.gameAudio.play('ui');
+      }
     } else if (zone?.floorDrop && !drag.reward) {
-      if (this.ui.dropToStash(drag.item.id)) this.gameAudio.play('ui');
+      if (this.ui.dropToStash(drag.item.id)) {
+        this.hud.suppressPlacedItemTooltip(drag.item.id);
+        this.gameAudio.play('ui');
+      }
     } else if (zone?.action === 'claim' && drag.reward) {
       this.ui.action('claim', drag.item.id);
     }

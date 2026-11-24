@@ -18,6 +18,9 @@ interface TooltipAnchor {
   height: number;
   tooltipBounds?: { x: number; y: number; width: number; height: number };
   safeTop?: number;
+  poolItem?: boolean;
+  poolBottom?: number;
+  poolSides?: { left: number; right: number };
 }
 
 const truncate = (value: string, maxLength: number): string =>
@@ -45,13 +48,19 @@ export class TooltipLayer {
     const compact = screenWidth < 520 || screenHeight < 520;
     const compactField = compact && anchor?.safeTop !== undefined;
     const widthCap = screenWidth < 520 ? 290 : screenHeight < 520 ? 264 : 400;
-    const width = Math.max(1, Math.min(screenWidth - 16, widthCap));
-    const bodyCopy = truncate([content.summary, content.description].filter(Boolean).join('\n'), compactField ? 88 : compact ? 320 : 520);
+    const compactHeight = 148;
+    const poolNeedsSide = anchor?.poolBottom !== undefined && anchor.safeTop !== undefined && anchor.safeTop + compactHeight > anchor.poolBottom;
+    const sideWidth = poolNeedsSide && anchor
+      ? Math.max(anchor.x - (anchor.poolSides?.left ?? 8),
+        (anchor.poolSides?.right ?? screenWidth - 8) - anchor.x - anchor.width) - 14
+      : widthCap;
+    const width = Math.max(1, Math.min(screenWidth - 16, widthCap, sideWidth));
+    const bodyCopy = truncate([content.summary, content.description].filter(Boolean).join('\n'), compactField && !anchor?.poolItem ? 88 : compact ? 320 : 520);
     const relationLimit = compactField ? 1 : compact ? 2 : 3;
     const relationDetailLimit = compactField ? 36 : compact ? 92 : 140;
     const relations = content.relations.slice(0, relationLimit).map(relation => ({
       ...relation,
-      detail: truncate(relation.detail, relationDetailLimit),
+      detail: poolNeedsSide ? relation.detail : truncate(relation.detail, relationDetailLimit),
     }));
     const key = `${content.key}|${content.title}|${content.tags.map(tag => tag.label).join(',')}|${bodyCopy}|${relations.map(relation => `${relation.active ? 1 : 0}:${relation.label}:${relation.detail}`).join('|')}|${width}|${screenHeight}`;
     if (key === this.contentKey) {
@@ -64,16 +73,40 @@ export class TooltipLayer {
       fontFamily: 'Georgia, serif', fontSize: compactField ? '10px' : compact ? '12px' : '15px', lineSpacing: compactField ? 0 : compact ? 2 : 3,
       color: '#e6d8c4', wordWrap: { width: textWidth }, resolution: 2,
     });
-    const relationRows = relations.map(relation => this.scene.add.text(0, 0, `${relation.active ? '✓' : '◇'} ${relation.label} · ${relation.detail}`, {
+    const relationRows = relations.map(relation => this.scene.add.text(0, 0,
+      poolNeedsSide
+        ? `${relation.active ? '✓' : '◇'} ${relation.label}\n${relation.detail}`
+        : `${relation.active ? '✓' : '◇'} ${relation.label} · ${relation.detail}`, {
       fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: compactField ? '9px' : compact ? '12px' : '14px', lineSpacing: compactField ? 0 : compact ? 1 : 2,
       color: relation.color, wordWrap: { width: textWidth }, resolution: 2,
     }));
-    const contentHeight = body.height + (bodyCopy && relationRows.length ? 8 : 0)
-      + relationRows.reduce((total, row) => total + row.height + (compact ? 6 : 8), 0);
     const contentTop = compactField ? 50 : 70;
-    const bottomInset = compactField ? 10 : 20;
+    const bottomInset = 24;
     const topInset = screenHeight < 520 ? 60 : 8;
-    const maxHeight = Math.max(1, Math.min(compactField ? 112 : screenHeight, screenHeight - topInset - 8));
+    const rowHeight = poolNeedsSide && anchor?.poolBottom !== undefined
+      ? Math.max(96, anchor.poolBottom - anchor.y)
+      : screenHeight;
+    const maxHeight = Math.max(1, Math.min(compactField ? compactHeight : screenHeight, rowHeight, screenHeight - topInset - 8));
+    if (poolNeedsSide) {
+      const availableHeight = maxHeight - contentTop - bottomInset;
+      const gap = relationRows.length ? 4 : 0;
+      const relationHeight = relationRows.reduce((total, row) => total + row.height, 0);
+      const wrapped = body.getWrappedText();
+      const lineHeight = body.height / Math.max(1, wrapped.length);
+      const summaryLines = content.summary ? body.getWrappedText(content.summary).length : 0;
+      const maxLines = Math.max(1, summaryLines, Math.floor((availableHeight - relationHeight - gap) / lineHeight));
+      if (wrapped.length > maxLines) {
+        if (maxLines <= summaryLines) body.setText(content.summary);
+        else {
+          const visible = wrapped.slice(0, maxLines);
+          visible[maxLines - 1] = visible[maxLines - 1]!.slice(0, -2) + '…';
+          body.setText(visible.join('\n'));
+        }
+      }
+    }
+    const relationGap = bodyCopy && relationRows.length ? (poolNeedsSide ? 4 : 8) : 0;
+    const rowGap = poolNeedsSide ? 0 : compact ? 6 : 8;
+    const contentHeight = body.height + relationGap + relationRows.reduce((total, row) => total + row.height + rowGap, 0);
     const requestedHeight = contentTop + contentHeight + bottomInset;
     const minimumHeight = compactField ? 96 : 112;
     const height = Math.min(maxHeight, Math.max(Math.min(minimumHeight, maxHeight), requestedHeight));
@@ -87,13 +120,13 @@ export class TooltipLayer {
 
     const text = this.scene.add.container(36, contentTop);
     if (bodyCopy) text.add(body);
-    let contentY = body.height + (bodyCopy && relationRows.length ? 8 : 0);
+    let contentY = body.height + relationGap;
     relationRows.forEach((row, index) => {
       row.setPosition(0, contentY);
       text.add(row);
-      contentY += row.height + (compact ? 6 : 8);
+      contentY += row.height + rowGap;
     });
-    text.setScale(1, contentScale);
+    if (!poolNeedsSide) text.setScale(1, contentScale);
     this.root.add(text);
     this.boxWidth = width;
     this.boxHeight = height;
@@ -173,6 +206,16 @@ export class TooltipLayer {
     const anchor = this.anchor ?? { x: pointerX, y: pointerY, width: 0, height: 0 };
     const maxX = Math.max(margin, screenWidth - this.boxWidth - margin);
     const maxY = Math.max(topInset, screenHeight - this.boxHeight - margin);
+    if (anchor.poolBottom !== undefined && anchor.safeTop !== undefined && anchor.safeTop + this.boxHeight > anchor.poolBottom) {
+      const right = anchor.x + anchor.width + gap;
+      const left = anchor.x - this.boxWidth - gap;
+      const leftLimit = anchor.poolSides?.left ?? margin;
+      const rightLimit = (anchor.poolSides?.right ?? screenWidth - margin) - this.boxWidth;
+      const x = right <= rightLimit ? right : Math.max(leftLimit, left);
+      const y = Math.max(topInset, anchor.poolBottom - this.boxHeight);
+      this.root.setPosition(x, y).setVisible(true);
+      return;
+    }
     if (anchor && screenWidth < 520 && screenHeight >= 520) {
       const x = Math.max(margin, Math.min(maxX, (screenWidth - this.boxWidth) / 2));
       const y = Math.max(topInset, Math.min(maxY, anchor.safeTop ?? screenHeight * .6));
@@ -202,18 +245,22 @@ export class TooltipLayer {
   private showContainedDetail(content: ItemTooltipContent, bounds: NonNullable<TooltipAnchor['tooltipBounds']>, screenWidth: number, screenHeight: number): void {
     const width = Math.max(1, Math.min(bounds.width, screenWidth - 16));
     const maxHeight = Math.max(1, Math.min(bounds.height, screenHeight - 16));
+    const x = Math.max(8, Math.min(screenWidth - width - 8, bounds.x));
+    const y = Math.max(8, Math.min(screenHeight - maxHeight - 8, bounds.y));
+    if (maxHeight < 118) {
+      this.showInlineDetail(content, x, y, width, maxHeight);
+      return;
+    }
+
     const narrow = width < 180;
     const relationLimit = width < 240 ? 1 : 2;
     const detail = [
       content.summary,
-      narrow ? truncate(content.description, 42) : content.description,
+      content.description,
       ...content.relations.slice(0, relationLimit).map(relation => `${relation.active ? '✓' : '◇'} ${relation.label} · ${truncate(relation.detail, narrow ? 28 : 140)}`),
     ].filter(Boolean).join('\n');
-    const detailLimit = narrow ? 130 : width < 240 ? 190 : 250;
-    const clippedDetail = truncate(detail, detailLimit);
-    const key = `${content.key}|contained|${width}|${maxHeight}|${clippedDetail}`;
-    const x = Math.max(8, Math.min(screenWidth - width - 8, bounds.x));
-    const y = Math.max(8, Math.min(screenHeight - maxHeight - 8, bounds.y));
+
+    const key = `${content.key}|contained|${width}|${maxHeight}|${detail}`;
     if (key === this.contentKey) {
       this.root.setPosition(x, y).setVisible(true);
       return;
@@ -233,7 +280,7 @@ export class TooltipLayer {
     if (tags.width > width - 36) tags.setScale((width - 36) / tags.width);
     tags.setPosition(width / 2, 37);
 
-    const body = this.scene.add.text(0, 0, clippedDetail, {
+    const body = this.scene.add.text(0, 0, detail, {
       fontFamily: 'Georgia, serif', fontSize: width < 180 ? '8px' : width < 260 ? '9px' : width < 320 ? '10px' : '11px', lineSpacing: 1,
       color: '#e6d8c4', wordWrap: { width: width - 36 }, resolution: 2,
     });
@@ -249,6 +296,45 @@ export class TooltipLayer {
     this.addPanel(width, height);
     this.root.add(title);
     this.root.add(tags);
+    this.root.add(body);
+    this.boxWidth = width;
+    this.boxHeight = height;
+    this.contentKey = key;
+    this.root.setPosition(x, y).setVisible(true);
+  }
+
+  private showInlineDetail(content: ItemTooltipContent, x: number, y: number, width: number, height: number): void {
+    const relation = content.description.length < 42 ? content.relations[0] : undefined;
+    const lines = [truncate(content.summary, width < 220 ? 44 : 58), content.description,
+      ...(relation ? [`${relation.active ? '✓' : '◇'} ${relation.label} · ${truncate(relation.detail, 48)}`] : [])]
+      .filter(Boolean);
+    const copy = lines.join('\n');
+    const key = `${content.key}|inline|${width}|${height}|${copy}`;
+    if (key === this.contentKey) {
+      this.root.setPosition(x, y).setVisible(true);
+      return;
+    }
+
+    const backing = this.scene.add.graphics();
+    backing.fillStyle(0x21171d, .985).fillRoundedRect(1, 1, Math.max(1, width - 2), Math.max(1, height - 2), 3);
+    backing.lineStyle(1, 0x8b765c, .78).strokeRoundedRect(1, 1, Math.max(1, width - 2), Math.max(1, height - 2), 3);
+    const showTitle = height >= 85;
+    const title = showTitle ? this.scene.add.text(7, 5, content.title, {
+      fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: '13px',
+      color: '#fff0d4', resolution: 2,
+    }) : undefined;
+    if (title && title.width > width - 14) title.setScale((width - 14) / title.width);
+    const bodyY = title ? Math.max(23, title.displayHeight + 9) : 4;
+    const body = this.scene.add.text(7, bodyY, copy, {
+      fontFamily: 'Georgia, serif', fontSize: width < 220 ? '9px' : '10px', lineSpacing: 0,
+      color: '#eadfce', wordWrap: { width: Math.max(1, width - 14) }, resolution: 2,
+    });
+    const availableHeight = Math.max(1, height - bodyY - 4);
+    if (body.height > availableHeight) body.setScale(1, availableHeight / body.height);
+
+    this.clearChildren();
+    this.root.add(backing);
+    if (title) this.root.add(title);
     this.root.add(body);
     this.boxWidth = width;
     this.boxHeight = height;
