@@ -11,7 +11,7 @@ import { assetUrl } from '../presentation/assetUrl.ts';
 interface CanvasDrag {
   item: CombatItem; previewItem: CombatItem; pointerId: number; reward: boolean;
   startX: number; startY: number; x: number; y: number; active: boolean;
-  heroId?: string; anchor?: number; valid?: boolean; grabIndex: number; grabX: number; grabY: number;
+  heroId?: string; anchor?: number; targetCell?: number; valid?: boolean; grabIndex: number; grabX: number; grabY: number;
 }
 
 /** Phaser owns the visible Canvas, input, and presentation; combat remains pure TypeScript state. */
@@ -324,6 +324,12 @@ export class CombatScene extends Phaser.Scene {
     if (this.volumeDrag && this.volumeDrag.pointerId !== pointer.id) return;
     if (this.drag && this.drag.pointerId !== pointer.id) return;
     this.pointerX = pointer.x; this.pointerY = pointer.y;
+    if (pointer.wasCanceled) {
+      this.drag = undefined;
+      this.volumeDrag = undefined;
+      this.forceDraw();
+      return;
+    }
     if (this.volumeDrag?.pointerId === pointer.id) {
       this.updateVolume(pointer.x); this.volumeDrag = undefined; return;
     }
@@ -341,7 +347,7 @@ export class CombatScene extends Phaser.Scene {
 
   private finishItemDrag(drag: CanvasDrag, zone?: UIZone): void {
     const anchor = this.dragDestination(drag, zone);
-    if (anchor !== undefined && zone?.heroId && canPlaceItem(this.ui.state, drag.previewItem, zone.heroId, anchor)) {
+    if (anchor !== undefined && zone?.heroId && canPlaceItem(this.ui.state, drag.previewItem, zone.heroId, anchor, drag.item)) {
       const originalRotation = drag.item.rotation;
       drag.item.rotation = drag.previewItem.rotation;
       let placed = false;
@@ -368,8 +374,13 @@ export class CombatScene extends Phaser.Scene {
   }
 
   private activateZone(zone: UIZone | undefined, pointer: Phaser.Input.Pointer): void {
-    if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind')) {
+    if (zone?.action && (!zone.itemId || zone.action === 'claim' || zone.action === 'wind' || zone.action === 'inspect-reward')) {
       if (zone.action === 'floor-drop') return;
+      if (zone.action === 'loot-page') {
+        this.hud.changeLootPage(zone.value === '-1' ? -1 : 1);
+        this.gameAudio.play('ui');
+        return;
+      }
       if (zone.action === 'begin-run') { this.beginDescent(); return; }
       if (zone.action === 'fullscreen') { if (this.scale.isFullscreen) this.scale.stopFullscreen(); else this.scale.startFullscreen(); return; }
       if (zone.action === 'wind' && !this.ui.state.heroes.some(hero => hero.status === 'human' || hero.status === 'active')) {
@@ -421,9 +432,10 @@ export class CombatScene extends Phaser.Scene {
     const zone = this.hud.zoneAt(drag.x, drag.y);
     const anchor = this.dragDestination(drag, zone);
     drag.heroId = zone?.heroId;
+    drag.targetCell = zone?.cell;
     drag.anchor = anchor;
     drag.valid = anchor !== undefined && zone?.heroId !== undefined
-      ? canPlaceItem(this.ui.state, drag.previewItem, zone.heroId, anchor)
+      ? canPlaceItem(this.ui.state, drag.previewItem, zone.heroId, anchor, drag.item)
       : zone?.cell !== undefined ? false : undefined;
   }
 
@@ -464,8 +476,9 @@ export class CombatScene extends Phaser.Scene {
   }
   private dragPreview(): DragPreview | undefined {
     const drag = this.drag;
-    if (!drag) return undefined;
-    return { item: drag.previewItem, x: drag.x, y: drag.y, heroId: drag.heroId, anchor: drag.anchor, valid: drag.valid };
+    if (!drag?.active) return undefined;
+    return { item: drag.previewItem, x: drag.x, y: drag.y, grabX: drag.grabX, grabY: drag.grabY,
+      heroId: drag.heroId, anchor: drag.anchor, targetCell: drag.targetCell, valid: drag.valid };
   }
 
   private keyDown(event: KeyboardEvent): void {
@@ -477,6 +490,8 @@ export class CombatScene extends Phaser.Scene {
     } else if ((key === 'r' || key === 'к') && this.ui.selectedItem) {
       event.preventDefault(); this.ui.rotateItem(this.ui.selectedItem); this.forceDraw();
     } else if (key === 'escape' && this.ui.optionsOpen) { this.ui.action('options'); this.forceDraw(); }
+    else if (key === 'escape' && this.ui.rewardInfo) { this.ui.action('close-reward-info'); this.forceDraw(); }
+    else if (key === 'escape' && this.ui.heroInfoId) { this.ui.action('close-hero-info'); this.forceDraw(); }
     else if (key === 'escape' && this.ui.confirmReset) { this.ui.action('cancel-reset'); this.forceDraw(); }
   }
 

@@ -40,11 +40,29 @@ describe('item catalog consistency', () => {
     expect(new GameUI().itemDescription(rare)).toContain('1,35');
   });
 
-  it('uses the same synergy amount in descriptions and calculations', () => {
+  it('exposes the same neighbour bonus in structured rules, equipped item details and combat', () => {
     const stone = createItem('whetstone', 'stone', () => 0); stone.cell = 0;
     const blade = createItem('blade', 'blade', () => 0); blade.cell = 2;
     const bonus = itemBonuses(blade, [blade, stone]).damage;
-    expect(stone.description).toContain(String(bonus));
-    expect(synergyTargets(stone).find(rule => rule.tag === 'blade')?.text).toContain(String(bonus));
+    expect(bonus).toBeGreaterThan(0);
+    expect(itemBonuses(blade, [blade]).damage).toBe(0);
+    expect(synergyTargets(stone)).toContainEqual({ tag: 'blade', text: `+${bonus} урона` });
+    const ui = new GameUI();
+    const hero = ui.state.heroes[0]!;
+    hero.items = [stone, blade];
+    expect(ui.itemDetails(blade, hero).effects).toContain(`Клинок: +${bonus} урона`);
+  });
+
+  it('describes the lantern penalty with the same direction as the combat factor', () => {
+    const lantern = createItem('lantern', 'lantern', () => 0); lantern.cell = 0;
+    const blade = createItem('blade', 'blade', () => 0); blade.cell = 2;
+    const factor = itemBonuses(lantern, [lantern, blade]).cooldownFactor;
+    expect(factor).toBeGreaterThan(1);
+    expect(synergyTargets(lantern)).toContainEqual({
+      tag: 'blade', text: `+${Math.round((factor - 1) * 100)}% перезарядки`, negative: true,
+    });
+    lantern.calmed = true;
+    expect(itemBonuses(lantern, [lantern, blade]).cooldownFactor).toBe(1);
+    expect(synergyTargets(lantern).some(rule => rule.negative)).toBe(false);
   });
 });

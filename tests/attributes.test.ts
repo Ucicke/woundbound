@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
-import { applyEffect, attributeCooldownFactor, attributeModifier, itemAttributeFactor } from '../src/combat/simulation.ts';
+import { applyEffect, attributeCooldownFactor, attributeModifier, heroArmorBreakdown, itemAttributeFactor, transformHeroToPuppet } from '../src/combat/simulation.ts';
 import { createItem } from '../src/combat/items.ts';
 
 describe('hero characteristics', () => {
@@ -23,5 +23,16 @@ describe('hero characteristics', () => {
     guard.items = [];
     expect(applyEffect(state, guard.id, 'damage', 5)).toBe(true);
     expect(guard.hp).toBe(guard.maxHp - 3);
+  });
+
+  it('shows armor sources and the same capped total that reduces damage', () => {
+    const state = createFullEncounter({ random: () => 0 });
+    const guard = state.heroes[0];
+    guard.status = 'rebirthing';
+    expect(transformHeroToPuppet(guard, 'automaton-bastion')).toBe(true);
+    guard.items = [createItem('watchman-cuirass', 'test-armor', () => .99)];
+    expect(heroArmorBreakdown(guard)).toEqual({ equipment: 7, constitution: 2, form: 3, total: 8 });
+    expect(applyEffect(state, guard.id, 'damage', 13)).toBe(true);
+    expect(guard.durability).toBe(guard.maxDurability - 5);
   });
 });

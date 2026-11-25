@@ -20,13 +20,16 @@ const CLASS_ATTRIBUTES: Record<HeroClass, HeroAttributes> = {
   clockmaker: { strength: 10, dexterity: 14, constitution: 10, intellect: 16, wisdom: 10, presence: 12 },
 };
 export const attributeModifier = (score: number): number => Math.floor((score - 10) / 2);
+export const ATTRIBUTE_EFFECT_PERCENT = { itemOutput: 5, cooldown: -2 } as const;
 export function itemAttributeFactor(hero: Combatant, item: CombatItem): number {
   if (hero.side !== 'hero') return 1;
   const stats = hero.attributes;
   const score = item.effect === 'heal' ? stats.wisdom : item.effect === 'wind' ? stats.presence : item.category === 'weapon' || item.category === 'ammo' ? stats.strength : stats.intellect;
-  return 1 + attributeModifier(score) * .05;
+  return 1 + attributeModifier(score) * (ATTRIBUTE_EFFECT_PERCENT.itemOutput / 100);
 }
-export function attributeCooldownFactor(hero: Combatant): number { return 1 - attributeModifier(hero.attributes.dexterity) * .02; }
+export function attributeCooldownFactor(hero: Combatant): number {
+  return 1 + attributeModifier(hero.attributes.dexterity) * (ATTRIBUTE_EFFECT_PERCENT.cooldown / 100);
+}
 export interface CombatItem { id: string; definitionId?: string; name: string; description?: string; rarity?: ItemRarity; rarityMultiplier?: number; classAffinity?: ItemClassAffinity; category?: ItemCategory; damageType?: 'physical' | 'fire' | 'arcane'; passiveBonuses?: ItemPassiveBonuses; damage: number; windAmount?: number; cooldownMs: number; remainingMs: number; targetPolicy: TargetPolicy; trigger: 'always' | 'ownerBelowHalf' | 'targetBelowHalf' | 'allyBelowHalf' | 'passive'; cell?: number; rotation?: number; reach?: Reach; shape?: readonly (readonly [number, number])[]; tags?: string[]; effect?: 'damage' | 'heal' | 'wind' | 'passive'; healTarget?: 'self' | 'lowest'; calmed?: boolean }
 export interface Combatant {
   id: string; name: string; side: 'hero' | 'enemy'; slot: number;
@@ -207,11 +210,17 @@ function rollManualWindAmount(state: EncounterState, doll: Combatant): number {
 }
 
 export const MAX_ARMOR = 8;
-export function heroArmor(target: Combatant): number {
-  if (target.side !== 'hero') return 0;
+export function heroArmorBreakdown(target: Combatant) {
+  if (target.side !== 'hero') return { equipment: 0, constitution: 0, form: 0, total: 0 };
   const affinity = heroClassForActor(target);
   const equipment = Math.round(target.items.reduce((sum, item) => sum + (item.passiveBonuses?.armor ?? 0) * (affinity && item.classAffinity === affinity ? COMBAT_CONFIG.classAffinityMultiplier : 1), 0));
-  return Math.max(0, Math.min(MAX_ARMOR, equipment + (target.isPuppet ? getPuppetForm(target.puppetFormId)?.armor ?? 0 : 0) + attributeModifier(target.attributes.constitution)));
+  const form = target.isPuppet ? getPuppetForm(target.puppetFormId)?.armor ?? 0 : 0;
+  const constitution = attributeModifier(target.attributes.constitution);
+  return { equipment, constitution, form, total: Math.max(0, Math.min(MAX_ARMOR, equipment + form + constitution)) };
+}
+
+export function heroArmor(target: Combatant): number {
+  return heroArmorBreakdown(target).total;
 }
 
 function dropDeadHeroItems(state: EncounterState, hero: Combatant): Array<{ id: string; cell: number }> {

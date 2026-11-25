@@ -83,8 +83,8 @@ const centerLine = rows.map(row => inventoryIndex(Math.floor((INVENTORY_GRID_SIZ
 const edgeLine = rows.map(row => inventoryIndex(Math.floor(INVENTORY_GRID_SIZE / 2), row));
 
 const cellLabels: Record<PuppetCellTag, string> = {
-  threaded: `Нитяные ячейки: кулдаун предметов −${percent(PUPPET_RULES.threadedCooldownReduction)}%.`,
-  mechanical: `Механические ячейки: кулдаун −${percent(PUPPET_RULES.mechanicalCooldownReduction)}%, срабатывание тратит ${PUPPET_RULES.mechanicalChargeCost} завод.`,
+  threaded: `Нитяные ячейки: перезарядка предметов −${percent(PUPPET_RULES.threadedCooldownReduction)}%.`,
+  mechanical: `Механические ячейки: перезарядка −${percent(PUPPET_RULES.mechanicalCooldownReduction)}%, срабатывание тратит ${PUPPET_RULES.mechanicalChargeCost} завод.`,
   cursed: `Проклятые ячейки: урон +${percent(PUPPET_RULES.cursedDamageBonus)}%, срабатывание тратит ${PUPPET_RULES.cursedChargeCost} завод.`,
   sacred: `Священные ячейки: лечение усиливается на ${percent(PUPPET_RULES.sacredHealingBonus)}%.`,
 };
@@ -93,13 +93,13 @@ const passiveDescriptions: Record<PuppetPassiveId, string> = {
   'tin-parade': `Каждое ${PUPPET_RULES.tinEvery}-е срабатывание вещи усиливается на ${percent(PUPPET_RULES.tinBonus)}% и ускоряет соседние вещи на ${seconds(PUPPET_RULES.tinNeighbourReductionMs)} с.`,
   'bastion-counterwind': `Базовая броня +${PUPPET_RULES.bastionArmor}. Каждый ${PUPPET_RULES.bastionEveryHits}-й полученный удар возвращает ${PUPPET_RULES.bastionWindRefund} единиц завода.`,
   'reliquary-offering': `Срабатывание вещи на священной ячейке чинит куклу на ${PUPPET_RULES.reliquaryRepair} прочности и возвращает ${PUPPET_RULES.reliquaryWindRefund} единицы завода.`,
-  'thread-dance': `Кулдаун вещей рядом друг с другом уменьшается на ${percent(PUPPET_RULES.threadCooldownReduction)}%; их срабатывания дополнительно ускоряют соседей на ${seconds(PUPPET_RULES.threadNeighbourReductionMs)} с.`,
+  'thread-dance': `Время перезарядки соседних вещей сокращается на ${percent(PUPPET_RULES.threadCooldownReduction)}%; их срабатывания дополнительно ускоряют соседей на ${seconds(PUPPET_RULES.threadNeighbourReductionMs)} с.`,
   'clockwork-mark': `Дальнобойная атакующая вещь на механической ячейке наносит на ${percent(PUPPET_RULES.pathfinderDamageBonus)}% больше урона и возвращает ${PUPPET_RULES.pathfinderWindRefund} единицы завода.`,
   'fate-streak': `Атакующие вещи выбирают врага с наименьшим здоровьем. Повторные удары по той же цели усиливаются на ${percent(PUPPET_RULES.fateBonusPerHit)}% за удар, максимум на ${percent(PUPPET_RULES.fateMaxBonus)}%.`,
   'penitent-winding': `Ручной подзавод даёт на ${percent(PUPPET_RULES.penitentWindBonus)}% больше заряда, но отнимает ${PUPPET_RULES.penitentDurabilityCost} прочность.`,
   'spring-reservoir': `Каждая занятая механическая ячейка замедляет расход завода на ${percent(PUPPET_RULES.springDrainReductionPerCell)}%, максимум на ${percent(PUPPET_RULES.springMaxDrainReduction)}%. Срабатывание вещи на ней возвращает ${PUPPET_RULES.springWindRefund} единицы завода.`,
   'martyr-reflection': `Отражает ${percent(PUPPET_RULES.martyrReflection)}% полученного урона атакующему, но сама получает на ${percent(PUPPET_RULES.martyrExtraDamage)}% больше урона.`,
-  'puppet-mistress': `Каждое срабатывание сокращает оставшийся кулдаун соседних вещей на ${seconds(PUPPET_RULES.mistressNeighbourReductionMs)} с.`,
+  'puppet-mistress': `Каждое срабатывание сокращает оставшееся время перезарядки соседних вещей на ${seconds(PUPPET_RULES.mistressNeighbourReductionMs)} с.`,
   'master-overclock': `Каждое ${PUPPET_RULES.masterEvery}-е срабатывание вещи на механической ячейке усиливается на ${percent(PUPPET_RULES.masterBonus)}% и дополнительно тратит ${PUPPET_RULES.masterChargeCost} завода, если его хватает на полный расход.`,
   'gear-oracle': `Каждое ${PUPPET_RULES.oracleEvery}-е срабатывание передаёт ${PUPPET_RULES.oracleWind} единиц завода другой кукле с наименьшим зарядом; со священной ячейки — ${PUPPET_RULES.oracleSacredWind}.`,
 };

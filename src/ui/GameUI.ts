@@ -3,7 +3,7 @@ import { createFullEncounter } from '../combat/encounter.ts';
 import { areAdjacent, canPlaceItem, INVENTORY_CELL_COUNT, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../combat/inventory.ts';
 import { attributeCooldownFactor, itemAttributeFactor, heroClassForActor, prepareEncounter, queueWinding, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { beginRun, calmWorkshopItem, claimReward, createRun, enterRoom, leaveWorkshop, nextRoomChoices, openRoute, resolveInfirmary, syncRun, windWorkshop, type RunState } from '../combat/run.ts';
-import { ITEM_CATEGORY_LABELS, ITEM_CLASS_LABELS } from '../combat/items.ts';
+import { ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ItemDialogue } from '../presentation/itemDialogue.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
 import { formatItemNumber } from '../combat/formatNumber.ts';
@@ -14,10 +14,14 @@ import { loadTestScenario, prepareFastEncounter as prepareTestEncounter, tickTes
 const gameActions = new Set([
   'item', 'cell', 'rotate', 'toggle-start-loadout', 'set-start-loadout', 'begin-run', 'route', 'room', 'claim',
   'workshop-wind', 'calm', 'leave-workshop', 'event-choice', 'store', 'wind', 'help', 'options', 'audio-mute',
-  'hero-info', 'close-hero-info', 'restart', 'cancel-reset', 'confirm-reset',
+  'hero-info', 'close-hero-info', 'inspect-reward', 'close-reward-info', 'restart', 'cancel-reset', 'confirm-reset',
 ]);
 
 /** Game state and player commands. Phaser renders this model; this class has no DOM dependency. */
+function itemStatRange(base: string, total: string): string {
+  return base === total ? base : `${base} → ${total}`;
+}
+
 export class GameUI {
   state: EncounterState;
   readonly run: RunState;
@@ -31,6 +35,7 @@ export class GameUI {
   optionsOpen = false;
   readonly audioSettings = loadAudioSettings();
   heroInfoId: string | null = null;
+  rewardInfoId: string | null = null;
   latestAction?: CombatEvent;
   highlightUntil = 0;
   readonly dialogue = new ItemDialogue();
@@ -74,7 +79,8 @@ export class GameUI {
   }
 
   setPaused(paused: boolean): void { this.paused = paused; }
-  get dialogOpen(): boolean { return this.confirmReset || this.helpOpen || this.optionsOpen || this.heroInfoId !== null; }
+  get rewardInfo(): CombatItem | undefined { return this.run.offers.find(item => item.id === this.rewardInfoId); }
+  get dialogOpen(): boolean { return this.confirmReset || this.helpOpen || this.optionsOpen || this.heroInfoId !== null || !!this.rewardInfo; }
 
   setAudioVolume(channel: AudioChannel, value: number): void {
     this.audioSettings[channel] = Math.max(0, Math.min(1, Math.round(value * 100) / 100));
@@ -83,35 +89,58 @@ export class GameUI {
   }
 
   itemDescription(item: CombatItem, hero?: Combatant): string {
+    const detail = this.itemDetails(item, hero);
+    return [...detail.stats, detail.description, ...detail.effects].join(' ');
+  }
+
+  itemDetails(item: CombatItem, hero?: Combatant) {
     const ownerAffinity = hero ? heroClassForActor(hero) : undefined;
     const nativeFactor = ownerAffinity && item.classAffinity === ownerAffinity ? COMBAT_CONFIG.classAffinityMultiplier : 1;
-    const bonuses = hero ? itemBonuses(item, hero.items, ownerAffinity) : { damage: 0, cooldownFactor: 1, healing: 0, wind: 0, descriptions: [] };
+    const bonuses = hero ? itemBonuses(item, hero.items, ownerAffinity) : { damage: 0, cooldownFactor: 1, healing: 0, wind: 0, effects: [] };
     const puppetRules = hero ? getPuppetItemRules(hero, item) : { outputMultiplier: 1, cooldownMultiplier: 1, chargeCost: 0, chargeRefund: 0, adjacentCooldownReductionMs: 0, oracleCharge: 0, durabilityRepair: 0 };
     const puppetCells = hero ? getPuppetItemCellModifiers(hero, item).map(modifier => modifier.label) : [];
-    const identity = item.classAffinity && item.category
-      ? `Тема: ${ITEM_CLASS_LABELS[item.classAffinity]} · тип: ${ITEM_CATEGORY_LABELS[item.category].toLowerCase()}. Родное снаряжение усиливает эффект на ${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}%. `
-      : '';
+    const effects = [
+      ...(item.classAffinity ? [`${nativeFactor === 1 ? 'Для класса' : 'Бонус класса'} «${ITEM_CLASS_LABELS[item.classAffinity]}»: +${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}% к эффекту.`] : []),
+      ...(puppetCells.length ? [`Ячейки формы: ${puppetCells.join(' ')}`] : []),
+    ];
     if (item.trigger === 'passive' || item.effect === 'passive') {
       const passive = item.passiveBonuses;
+      const scaled = (base: number): string =>
+        itemStatRange(`+${formatItemNumber(base)}`, `+${formatItemNumber(base * nativeFactor)}`);
+      const reduction = (factor: number): string => `−${Math.round(Math.min(.5, (1 - (passive?.cooldownFactor ?? 1)) * factor) * 100)}%`;
       const stats = [
-        ...(passive?.armor ? [`Броня: +${formatItemNumber(passive.armor * nativeFactor)} к общей броне`] : []),
-        ...(passive?.damage ? [`Урон ${passive.damageReach === 'far' ? 'дальних вещей' : 'вещей'}: +${formatItemNumber(passive.damage * nativeFactor)}`] : []),
-        ...(passive?.healing ? [`Лечение: +${formatItemNumber(passive.healing * nativeFactor)}`] : []),
-        ...(passive?.wind ? [`Подзавод: +${formatItemNumber(passive.wind * nativeFactor)}`] : []),
-        ...(passive?.cooldownFactor ? [`Кулдаун: −${Math.round(Math.min(.5, (1 - passive.cooldownFactor) * nativeFactor) * 100)}%`] : []),
+        ...(passive?.armor ? [`Броня: ${scaled(passive.armor)}`] : []),
+        ...(passive?.damage ? [`Урон ${passive.damageReach === 'far' ? 'дальних вещей' : 'вещей'}: ${scaled(passive.damage)}`] : []),
+        ...(passive?.healing ? [`Лечение: ${scaled(passive.healing)}`] : []),
+        ...(passive?.wind ? [`Подзавод: ${scaled(passive.wind)}`] : []),
+        ...(passive?.cooldownFactor ? [`Перезарядка: ${itemStatRange(reduction(1), reduction(nativeFactor))}`] : []),
       ];
-      return `${identity}${item.description ?? 'Пассивное свойство.'} ${stats.join('; ')}.${puppetCells.length ? ` Ячейки формы: ${puppetCells.join(' ')}` : ''}`;
+      return { stats, description: item.description ?? 'Пассивное свойство.', effects, modifiers: effects, adjacency: [] };
     }
     const statFactor = hero ? itemAttributeFactor(hero, item) : 1;
-    const cooldownFactor = bonuses.cooldownFactor * puppetRules.cooldownMultiplier * (hero ? attributeCooldownFactor(hero) : 1);
+    const heroCooldownFactor = hero ? attributeCooldownFactor(hero) : 1;
+    const cooldownFactor = bonuses.cooldownFactor * puppetRules.cooldownMultiplier * heroCooldownFactor;
     const cooldown = item.cooldownMs * cooldownFactor / 1000;
-    const amount = item.effect === 'wind'
-      ? `Подзавод: ${Math.round(((item.windAmount ?? item.damage) + bonuses.wind) * nativeFactor * puppetRules.outputMultiplier * statFactor)}.`
-      : item.effect === 'heal'
-        ? `Лечение: ${Math.round((item.damage + bonuses.healing) * nativeFactor * puppetRules.outputMultiplier * statFactor)}.`
-        : `Урон: ${Math.round((item.damage + bonuses.damage) * nativeFactor * puppetRules.outputMultiplier * statFactor)}.`;
-    const reach = (!item.effect || item.effect === 'damage') && item.reach === 'near' ? ' Владелец сам приближается к переднему врагу.' : '';
-    return `${identity}${item.description ?? 'Автоматическое действие.'}${item.calmed ? ' Предмет успокоен.' : ''} ${amount}${reach} Кулдаун: ${(item.cooldownMs / 1000).toFixed(1)} с${cooldownFactor !== 1 ? ` → ${cooldown.toFixed(1)} с` : ''}.${bonuses.descriptions.length ? ` ${bonuses.descriptions.join('; ')}.` : ''}${puppetCells.length ? ` Ячейки формы: ${puppetCells.join(' ')}` : ''}`;
+    const base = item.effect === 'wind' ? item.windAmount ?? item.damage : item.damage;
+    const bonus = item.effect === 'wind' ? bonuses.wind : item.effect === 'heal' ? bonuses.healing : bonuses.damage;
+    const label = item.effect === 'wind' ? 'Подзавод' : item.effect === 'heal' ? 'Лечение' : 'Урон';
+    const total = Math.round((base + bonus) * nativeFactor * puppetRules.outputMultiplier * statFactor);
+    const amount = `${label}: ${itemStatRange(formatItemNumber(Math.round(base)), formatItemNumber(total))}`;
+    const reach = (!item.effect || item.effect === 'damage') && item.reach === 'near';
+    const baseSeconds = formatItemNumber(Math.round(item.cooldownMs / 100) / 10);
+    const currentSeconds = formatItemNumber(Math.round(cooldown * 10) / 10);
+    const cooldownLabel = `Перезарядка: ${itemStatRange(`${baseSeconds} с`, `${currentSeconds} с`)}`;
+    if (reach) effects.push('Владелец сам приближается к переднему врагу.');
+    if (item.calmed) effects.push('Предмет успокоен.');
+    if (statFactor !== 1) effects.push(`Характеристики героя: ×${formatItemNumber(statFactor)} к эффекту.`);
+    if (heroCooldownFactor !== 1) effects.push(`Ловкость героя: ×${formatItemNumber(heroCooldownFactor)} к перезарядке.`);
+    const formatEffect = ({ label, value }: { label: string; value: string }): string => `${label}: ${value}`;
+    const modifiers = [...effects, ...bonuses.effects.filter(effect => !effect.tag).map(formatEffect)];
+    return {
+      stats: [amount, cooldownLabel], description: item.description ?? 'Автоматическое действие.',
+      effects: [...effects, ...bonuses.effects.map(formatEffect)],
+      modifiers, adjacency: bonuses.effects.filter(effect => effect.tag),
+    };
   }
 
   selectItem(itemId: string): void {
@@ -213,6 +242,8 @@ export class GameUI {
     }
     else if (name === 'hero-info' && this.state.heroes.some(hero => hero.id === value)) this.heroInfoId = value;
     else if (name === 'close-hero-info') this.heroInfoId = null;
+    else if (name === 'inspect-reward' && this.run.offers.some(item => item.id === value)) this.rewardInfoId = value;
+    else if (name === 'close-reward-info') this.rewardInfoId = null;
     else if (name === 'restart' && (this.run.stage === 'defeat' || this.run.stage === 'victory')) {
       this.action('confirm-reset'); this.action('begin-run');
     }
@@ -223,7 +254,7 @@ export class GameUI {
       Object.assign(this.run, createRun(this.state));
       this.prepareFastEncounter(); this.selectedItem = null; this.confirmReset = false;
       this.startLoadoutMenuOpen = false;
-      this.heroInfoId = null; this.helpOpen = false; this.optionsOpen = false;
+      this.heroInfoId = null; this.rewardInfoId = null; this.helpOpen = false; this.optionsOpen = false;
       this.message = ''; this.latestAction = undefined; this.highlightUntil = 0; this.paused = false;
       this.dialogue.reset(); this.dialogueSequence = 0;
     }

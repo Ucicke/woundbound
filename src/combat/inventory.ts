@@ -75,12 +75,12 @@ export function rotateItemInInventory(state: EncounterState, itemId: string): bo
 }
 
 /** Validate the entire footprint without changing ownership or position. */
-export function canPlaceItem(state: EncounterState, item: CombatItem, heroId: string, cell: number): boolean {
+export function canPlaceItem(state: EncounterState, item: CombatItem, heroId: string, cell: number, sourceItem = item): boolean {
   if (state.phase !== 'preparation' && state.phase !== 'result') return false;
   const hero = state.heroes.find(candidate => candidate.id === heroId && candidate.status !== 'dead');
   const cells = occupiedCells(item, cell);
   if (!hero || !cells) return false;
-  return !overlapsExisting(hero.items, cells, item);
+  return !overlapsExisting(hero.items, cells, sourceItem);
 }
 
 /** Move one real instance only after validating the complete destination. */
@@ -121,15 +121,19 @@ export function synergyTargets(item: CombatItem): Array<{ tag: string; text: str
   const result: Array<{ tag: string; text: string; negative?: boolean }> = [];
   if (item.tags?.includes('whetstone')) result.push({ tag: 'blade', text: `+${SYNERGY_RULES.whetstoneDamage} урона` });
   if (item.tags?.includes('blade')) result.push({ tag: 'whetstone', text: `+${SYNERGY_RULES.whetstoneDamage} урона` });
-  if (item.tags?.includes('spring')) result.push({ tag: 'clockwork', text: `−${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% кулдауна` });
-  if (item.tags?.includes('clockwork')) result.push({ tag: 'spring', text: `−${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% кулдауна` });
+  if (item.tags?.includes('spring')) result.push({ tag: 'clockwork', text: `−${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% перезарядки` });
+  if (item.tags?.includes('clockwork')) result.push({ tag: 'spring', text: `−${Math.round(SYNERGY_RULES.springCooldownReduction * 100)}% перезарядки` });
   if (item.tags?.includes('scope')) result.push({ tag: 'firearm', text: `+${SYNERGY_RULES.scopeDamage} урона` });
   if (item.tags?.includes('firearm')) result.push({ tag: 'scope', text: `+${SYNERGY_RULES.scopeDamage} урона` });
-  if (item.definitionId === 'lantern' && !item.calmed) result.push({ tag: 'blade', text: `+${Math.round(SYNERGY_RULES.jealousCooldownIncrease * 100)}% кулдауна`, negative: true });
+  if (item.definitionId === 'lantern' && !item.calmed) result.push({ tag: 'blade', text: `+${Math.round(SYNERGY_RULES.jealousCooldownIncrease * 100)}% перезарядки`, negative: true });
   return result;
 }
 
-export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity?: ItemClassAffinity): { damage: number; cooldownFactor: number; healing: number; wind: number; descriptions: string[] } {
+export interface ItemBonusEffect { label: string; value: string; tag?: string; negative?: boolean }
+
+export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity?: ItemClassAffinity): {
+  damage: number; cooldownFactor: number; healing: number; wind: number; effects: ItemBonusEffect[];
+} {
   const neighbours = items.filter(other => other !== item && areAdjacent(item, other));
   const stones = item.tags?.includes('blade') ? neighbours.filter(other => other.tags?.includes('whetstone')).length : 0;
   const springs = item.tags?.includes('clockwork') ? neighbours.filter(other => other.tags?.includes('spring')).length : 0;
@@ -149,15 +153,15 @@ export function itemBonuses(item: CombatItem, items: CombatItem[], ownerAffinity
     cooldownFactor: Math.max(SYNERGY_RULES.minimumCooldownFactor, adjacencyCooldown * passiveCooldown),
     healing: passiveHealing,
     wind: passiveWind,
-    descriptions: [
-      ...(stones ? [`Клинок: +${stones * SYNERGY_RULES.whetstoneDamage} урона`] : []),
-      ...(scopes ? [`Прицел: +${scopes * SYNERGY_RULES.scopeDamage} урона`] : []),
-      ...(springs ? [`Механизм: −${Math.round(springs * SYNERGY_RULES.springCooldownReduction * 100)}% кулдауна`] : []),
-      ...(passiveDamage ? [`Снаряжение: +${formatItemNumber(passiveDamage)} урона`] : []),
-      ...(passiveHealing ? [`Реликвии: +${formatItemNumber(passiveHealing)} лечения`] : []),
-      ...(passiveWind ? [`Механизмы: +${formatItemNumber(passiveWind)} завода`] : []),
-      ...(passiveCooldown < 1 ? [`Снаряжение: −${Math.round((1 - passiveCooldown) * 100)}% кулдауна`] : []),
-      ...(jealous ? [`Ревность: +${Math.round(SYNERGY_RULES.jealousCooldownIncrease * 100)}% кулдауна рядом с клинком`] : []),
+    effects: [
+      ...(stones ? [{ tag: 'whetstone', label: 'Клинок', value: `+${stones * SYNERGY_RULES.whetstoneDamage} урона` }] : []),
+      ...(scopes ? [{ tag: 'scope', label: 'Прицел', value: `+${scopes * SYNERGY_RULES.scopeDamage} урона` }] : []),
+      ...(springs ? [{ tag: 'spring', label: 'Пружины', value: `−${Math.round(springs * SYNERGY_RULES.springCooldownReduction * 100)}% перезарядки` }] : []),
+      ...(passiveDamage ? [{ label: 'Снаряжение', value: `+${formatItemNumber(passiveDamage)} урона` }] : []),
+      ...(passiveHealing ? [{ label: 'Реликвии', value: `+${formatItemNumber(passiveHealing)} лечения` }] : []),
+      ...(passiveWind ? [{ label: 'Механизмы', value: `+${formatItemNumber(passiveWind)} завода` }] : []),
+      ...(passiveCooldown < 1 ? [{ label: 'Снаряжение', value: `−${Math.round((1 - passiveCooldown) * 100)}% перезарядки` }] : []),
+      ...(jealous ? [{ tag: 'blade', negative: true, label: 'Клинок', value: `+${Math.round(SYNERGY_RULES.jealousCooldownIncrease * 100)}% перезарядки` }] : []),
     ],
   };
 }

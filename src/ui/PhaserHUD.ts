@@ -1,10 +1,12 @@
+import { heroAttributeRows, signedNumber } from './heroDetails.ts';
 import type Phaser from 'phaser';
 import { canUseInfirmary, RUN_ROOM_COUNT, type RoomKind, type RunStage } from '../combat/run.ts';
 import { areAdjacent, INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, inventoryColumn, inventoryRow, occupiedCells, rotatedShape, synergyTargets, SYNERGY_TAG_LABELS } from '../combat/inventory.ts';
-import { attributeModifier, chooseHeroTarget, heroArmor, heroClassForActor, MAX_ARMOR, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
+import { chooseHeroTarget, heroArmorBreakdown, heroClassForActor, MAX_ARMOR, projectRoleIntent, type CombatEvent, type CombatItem, type Combatant, type EncounterState } from '../combat/simulation.ts';
 import { ITEM_CLASS_LABELS } from '../combat/items.ts';
 import { ACTOR_ROWS, actorStateFrame, stoppedDollTransform, CLASS_ITEM_ART, type ActorSpriteId, type ActorSpriteState } from '../presentation/ArtCatalog.ts';
-import { itemArtBounds } from '../presentation/itemGeometry.ts';
+import { itemArtBounds, type ItemCell } from '../presentation/itemGeometry.ts';
+import { lootGrid } from './lootLayout.ts';
 import { assetUrl } from '../presentation/assetUrl.ts';
 import { getPuppetCellModifiers, getPuppetForm } from '../combat/puppets.ts';
 import { COMBAT_CONFIG } from '../combat/config.ts';
@@ -17,7 +19,7 @@ export interface UIZone {
   x: number; y: number; width: number; height: number;
   action?: string; value?: string; itemId?: string; actorId?: string; heroId?: string; cell?: number; tooltipBounds?: { x: number; y: number; width: number; height: number }; stash?: boolean; floorDrop?: boolean;
 }
-export interface DragPreview { item: CombatItem; x: number; y: number; heroId?: string; anchor?: number; valid?: boolean }
+export interface DragPreview { item: CombatItem; x: number; y: number; grabX: number; grabY: number; heroId?: string; anchor?: number; targetCell?: number; valid?: boolean }
 
 interface BattlefieldActorView {
   actorId: string;
@@ -43,7 +45,7 @@ const itemCatalog = CLASS_ITEM_ART;
 const itemFrames: Record<string, number> = Object.fromEntries(Object.entries(itemCatalog).map(([id, art]) => [id, art.frame]));
 const itemAtlases: Record<string, string> = Object.fromEntries(Object.entries(itemCatalog).map(([id, art]) => [id, art.atlas]));
 const rarityTints = [0x85868b, 0x45a45c, 0x428bdb, 0xa65bd2, 0xd6a52e] as const;
-const controlIcons = new Set(['⚙', '↻', '?', '⛶']);
+const controlIcons = new Set(['⚙', '↻', '?', '⛶', '‹', '›']);
 const synergyRelationLabels: Record<string, string> = {
   blade: 'КЛИНОК', whetstone: 'КАМЕНЬ', clockwork: 'МЕХАНИЗМ', spring: 'ПРУЖИНА',
   firearm: 'ОРУЖИЕ', scope: 'ПРИЦЕЛ', support: 'ПОДДЕРЖКА', glass: 'СТЕКЛО', bell: 'КОЛОКОЛ',
@@ -83,6 +85,21 @@ const dashboardLayout = {
   pilgrim: { portrait: [.115, .08, .23], tray: [.07, .423, .86, .474], labelX: .655, labelW: .46 },
   clockmaker: { portrait: [.115, .08, .23], tray: [.07, .414, .86, .515], labelX: .655, labelW: .46 },
 } as const;
+const INVENTORY_NICHE_HEIGHT = .525;
+const INVENTORY_NICHE_CENTER = .66;
+const PARTY_CARD_GAP = 7;
+const POOL_TILE_GAP = 8;
+const POOL_TOP_INSET = 3;
+const POOL_BOTTOM_INSET = 30;
+const POOL_GRID_OFFSET = 63;
+const POOL_ROUTE_HEIGHT = 60;
+const ROUTE_CARD_STYLE: Record<RoomKind, { label: string; icon: string; color: number }> = {
+  battle: { label: 'Бой', icon: '⚔', color: 0xe19b83 },
+  boss: { label: 'Босс', icon: '✦', color: 0xe19b83 },
+  cache: { label: 'Тайник', icon: '', color: 0xebc388 },
+  workshop: { label: 'Мастерская', icon: '⚙', color: 0xa5c9d0 },
+  event: { label: 'Событие', icon: '✚', color: 0xbed6a8 },
+};
 
 /** All visible UI is drawn to Phaser's Canvas; input zones share these exact bounds. */
 export class PhaserHUD {
@@ -102,6 +119,12 @@ export class PhaserHUD {
   private cells = new Map<string, { x: number; y: number; size: number }>();
   private hover?: UIZone;
   private now = 0;
+  private lootPage = 0;
+
+  changeLootPage(direction: number): void {
+    this.lootPage = Math.max(0, this.lootPage + direction);
+    this.tooltips.hide();
+  }
   private justPlacedItem?: string;
   private roomEntryPointer?: { x: number; y: number };
 
@@ -134,6 +157,14 @@ export class PhaserHUD {
 
   private get compactLayout(): boolean {
     return this.width < 820 && this.height > this.width;
+  }
+
+  private get narrowPortrait(): boolean {
+    return this.compactLayout && this.width < 420 && this.height >= 580;
+  }
+
+  private get wideLootLayout(): boolean {
+    return !this.compactLayout && this.width >= 1100;
   }
 
   constructor(private readonly scene: Phaser.Scene, private readonly ui: GameUI) {
@@ -171,6 +202,7 @@ export class PhaserHUD {
       this.currentRoom = this.ui.run.room;
     }
     if (this.currentStage !== this.ui.run.stage) {
+      this.lootPage = 0;
       this.currentStage = this.ui.run.stage;
       this.clickNotice = undefined;
       this.tooltips.hide();
@@ -200,11 +232,12 @@ export class PhaserHUD {
     }
     this.versionStamp();
     if (!drag && !this.hover) this.itemSpeech();
-    if (drag) this.drawDrag(drag);
+    if (drag && !this.drawDropFootprint(drag)) this.drawDrag(drag);
     if (this.ui.confirmReset) this.resetDialog();
     if (this.ui.helpOpen) this.helpDialog();
     if (this.ui.heroInfoId) this.heroInfoDialog();
     if (this.ui.optionsOpen) this.optionsDialog();
+    if (this.ui.rewardInfo) { this.rewardInfoDialog(this.ui.rewardInfo); return; }
     if (this.ui.dialogOpen) { this.tooltips.hide(); return; }
     this.renderHoverTooltip(pointerX, pointerY, drag);
     if (this.clickNotice && this.clickNotice.until > this.now) {
@@ -216,6 +249,7 @@ export class PhaserHUD {
   }
 
   private versionStamp(): void {
+    if (import.meta.env.PROD || this.narrowPortrait) return;
     const y = this.ui.run.stage === 'opening' ? this.height - 36 : 12;
     this.text(GAME_VERSION, 12, y, 10, '#b9b1bc')
       .setAlpha(.82)
@@ -244,7 +278,7 @@ export class PhaserHUD {
     const index = this.graphicsCursor++;
     let graphics = this.graphicsPool[index];
     if (!graphics) { graphics = this.scene.add.graphics().setVisible(false); this.graphicsPool[index] = graphics; }
-    graphics.clear().setVisible(true);
+    graphics.clear().setAlpha(1).setVisible(true);
     return graphics;
   }
 
@@ -320,47 +354,26 @@ export class PhaserHUD {
       this.tooltips.hide();
       return;
     }
-    if (drag || this.ui.dialogOpen || this.ui.run.stage === 'opening') { this.tooltips.hide(); return; }
+    if (drag || this.scene.input.activePointer.isDown || this.ui.dialogOpen || this.ui.run.stage === 'opening') { this.tooltips.hide(); return; }
     const zone = this.hover;
     if (zone?.itemId) {
       const item = this.itemById(zone.itemId);
       if (item) {
         const hero = this.ui.state.heroes.find(candidate => candidate.items.includes(item));
-        const tags = [categoryLabels[item.category ?? 'relic'], ...(item.tags ?? []).map(tag => SYNERGY_TAG_LABELS[tag] ?? tag.toUpperCase())];
         const relations = synergyTargets(item);
-        const info = this.ui.itemDescription(item, hero);
-        const match = info.match(/(?:Урон|Лечение|Подзавод):\s*\d+\./);
-        const passive = info.match(/(?:Броня|Урон вещей|Урон дальних вещей|Лечение|Подзавод|Кулдаун):[^.]+/g)?.join(' · ');
-        const stat = match?.[0].replace(/\.$/, '') ?? (item.effect === 'passive' ? passive ?? 'Пассивное свойство' : '');
-        const icon = item.effect === 'heal' ? '✚' : item.effect === 'wind' ? '⚙' : item.effect === 'passive' ? '◆' : item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
-        const damageLabel = !item.effect || item.effect === 'damage' ? (item.damageType === 'fire' ? 'огонь' : item.damageType === 'arcane' ? 'мистика' : 'физический') : '';
-        const cooldown = info.match(/Кулдаун: ([^.]+(?:\.\d+)? с(?: → [^.]+(?:\.\d+)? с)?)/)?.[1] ?? `${(item.cooldownMs / 1000).toFixed(1)} с`;
-        const content: ItemTooltipContent = {
-          key: `${item.id}:${info}`,
-          title: item.name,
-          tags: [...tags].reverse().map((label, index) => ({ label, color: ['#86ddb5', '#e3ba75', '#a5baf1'][index % 3]! })),
-          summary: stat ? `${icon} ${stat} ${damageLabel ? `(${damageLabel})` : ''} ${item.cooldownMs ? `· ⏱ ${cooldown}` : ''}` : '',
-          description: [item.description ?? '', item.classAffinity ? `${ITEM_CLASS_LABELS[item.classAffinity]} · эффект +${Math.round((COMBAT_CONFIG.classAffinityMultiplier - 1) * 100)}%.` : '', item.passiveBonuses?.armor ? `Общий предел брони: ${MAX_ARMOR}.` : ''].filter(Boolean).join('\n'),
-          relations: relations.map(rule => {
-            const active = hero?.items.some(candidate => candidate.id !== item.id
-              && candidate.tags?.includes(rule.tag) && areAdjacent(item, candidate)) ?? false;
-            return {
-              label: synergyRelationLabels[rule.tag] ?? SYNERGY_TAG_LABELS[rule.tag] ?? rule.tag.toUpperCase(),
-              detail: rule.text,
-              color: rule.negative ? '#ef9e70' : active ? '#86ddb5' : '#d8bb82',
-              active,
-            };
-          }),
-        };
+        const content = this.itemInspection(item, hero, relations);
+        const poolBounds = this.ui.run.stage === 'cleared' ? this.poolContentBounds() : undefined;
+        const related = hero?.items.filter(neighbour => neighbour !== item && areAdjacent(item, neighbour)
+          && relations.some(rule => neighbour.tags?.includes(rule.tag))) ?? [];
         this.tooltips.showItem(content, pointerX, pointerY, this.width, this.height, {
-          x: zone.x, y: zone.y, width: zone.width, height: zone.height,
+          ...this.itemTooltipSource(zone, item),
           tooltipBounds: zone.tooltipBounds,
-          safeTop: this.compactLayout ? (zone.floorDrop ? zone.y + zone.height + 8 : this.field.y) : undefined,
-          poolItem: zone.floorDrop,
-          poolBottom: this.compactLayout && zone.floorDrop ? this.right.y + this.right.height - 100 : undefined,
-          poolSides: this.compactLayout && zone.floorDrop
-            ? { left: this.right.x + 32, right: this.right.x + this.right.width - 32 }
-            : undefined,
+          safeTop: this.compactLayout && !zone.floorDrop ? poolBounds?.top ?? this.field.y : undefined,
+          poolBounds,
+          avoid: zone.heroId ? related.flatMap(neighbour => (occupiedCells(neighbour, neighbour.cell) ?? []).flatMap(index => {
+            const cell = this.cells.get(`${zone.heroId}:${index}`);
+            return cell ? [{ x: cell.x, y: cell.y, width: cell.size, height: cell.size }] : [];
+          })) : undefined,
         });
         return;
       }
@@ -378,6 +391,58 @@ export class PhaserHUD {
       }
     }
     this.tooltips.hide();
+  }
+
+  private itemInspection(item: CombatItem, hero?: Combatant, relations = synergyTargets(item)): ItemTooltipContent {
+    const tags = [categoryLabels[item.category ?? 'relic'], ...(item.tags ?? []).map(tag => SYNERGY_TAG_LABELS[tag] ?? tag.toUpperCase())];
+
+    const info = this.ui.itemDetails(item, hero);
+    const icon = item.effect === 'heal' ? '✚' : item.effect === 'wind' ? '⚙' : item.effect === 'passive' ? '◆' : item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
+    const damageLabel = !item.effect || item.effect === 'damage' ? (item.damageType === 'fire' ? 'огонь' : item.damageType === 'arcane' ? 'мистика' : 'физический') : '';
+    const [primary, ...secondary] = info.stats;
+    const stats = primary ? [`${icon} ${primary}${damageLabel ? ` (${damageLabel})` : ''}`, ...secondary] : [];
+    return {
+      key: item.id,
+      title: item.name,
+      tags: [
+        { label: rarityLabels[item.rarity ?? 'common'], color: `#${itemRarityTint(item.rarity).toString(16).padStart(6, '0')}` },
+        ...[...tags].reverse().map((label, index) => ({ label, color: ['#86ddb5', '#e3ba75', '#a5baf1'][index % 3]! })),
+      ],
+      stats,
+      description: info.description,
+      effects: [...info.modifiers, ...(item.passiveBonuses?.armor ? [`Общий предел брони: ${MAX_ARMOR}.`] : [])],
+      relations: relations.map(rule => {
+        const applied = info.adjacency.find(effect => effect.tag === rule.tag);
+        const affectsNeighbour = !rule.negative && ['blade', 'firearm', 'clockwork'].includes(rule.tag);
+        const active = hero?.items.some(candidate => candidate.id !== item.id
+          && candidate.tags?.includes(rule.tag) && areAdjacent(item, candidate)) ?? false;
+        return {
+          label: (synergyRelationLabels[rule.tag] ?? SYNERGY_TAG_LABELS[rule.tag] ?? rule.tag).toLocaleLowerCase('ru').replace(/^./u, char => char.toLocaleUpperCase('ru')),
+          detail: applied?.value ?? (affectsNeighbour ? `${rule.text} соседу` : rule.text),
+          negative: !!rule.negative,
+          active,
+        };
+      }),
+    };
+  }
+
+  private rewardInfoDialog(item: CombatItem): void {
+    this.modalBackdrop();
+    this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'close-reward-info' });
+    const width = Math.min(290, this.width - 46);
+    const bottom = this.tooltips.showItem({ ...this.itemInspection(item), shape: rotatedShape(item) }, 0, 0, this.width, this.height,
+      { x: 0, y: 0, width: 0, height: 0, centered: true });
+    this.button('Закрыть', (this.width - width) / 2, bottom + 10, width, 45, 'close-reward-info');
+  }
+
+  private itemTooltipSource(zone: UIZone, item: CombatItem): Pick<UIZone, 'x' | 'y' | 'width' | 'height'> {
+    if (zone.heroId === undefined || zone.cell === undefined) return zone;
+    const origin = this.cells.get(`${zone.heroId}:${item.cell ?? 0}`);
+    if (!origin) return zone;
+    const shape = rotatedShape(item);
+    const columns = Math.max(1, ...shape.map(([x]) => x + 1));
+    const rows = Math.max(1, ...shape.map(([, y]) => y + 1));
+    return { x: origin.x, y: origin.y, width: columns * origin.size, height: rows * origin.size };
   }
 
   private clearTransientPresentation(): void {
@@ -401,23 +466,23 @@ export class PhaserHUD {
   }
 
   private partyCardSize(): { width: number; height: number } {
-    const gap = 7;
     const footer = this.ui.selectedItem ? (this.compactLayout ? 26 : 31) : 0;
+    const padding = this.narrowPortrait ? 4 : 12;
     return {
-      width: Math.max(1, (this.left.width - 12 - gap) / 2),
-      height: Math.max(1, (this.left.height - 12 - gap - footer) / 2),
+      width: Math.max(1, (this.left.width - padding - PARTY_CARD_GAP) / 2),
+      height: Math.max(1, (this.left.height - padding - PARTY_CARD_GAP - footer) / 2),
     };
   }
 
   private layout(compact: boolean): void {
     const margin = Math.max(5, Math.round(this.width * .007));
-    const head = compact ? 62 : Math.max(62, this.height * .07);
+    const head = compact ? (this.narrowPortrait ? 34 : 62) : Math.max(62, this.height * .07);
     const y = head + margin;
     const roomHeight = this.height - y - margin;
     if (compact) {
       const { stage } = this.ui.run;
       const needsLootSpace = stage === 'reward' || stage === 'cache' || stage === 'cleared' || stage === 'route';
-      const partyH = Math.floor(roomHeight * (needsLootSpace ? .54 : .59));
+      const partyH = Math.floor(roomHeight * (needsLootSpace ? (this.narrowPortrait ? .56 : .57) : .59));
       this.left = { x: margin, y, width: this.width - margin * 2, height: partyH - margin };
       this.right = { x: margin, y: y + partyH, width: this.width - margin * 2, height: roomHeight - partyH };
     } else {
@@ -483,21 +548,23 @@ export class PhaserHUD {
     this.addToRoot(text); return text;
   }
 
-  private button(label: string, x: number, y: number, width: number, height: number, action: string, value = '', primary = false): void {
-    const hot = this.hover?.action === action && this.hover.value === value;
+  private button(label: string, x: number, y: number, width: number, height: number, action: string, value = '',
+    primary = false, enabled = true, hitArea = { x, y, width, height }): void {
+    const hot = enabled && this.hover?.action === action && this.hover.value === value;
+    const pressed = hot && this.scene.input.activePointer.leftButtonDown();
     const isControlIcon = controlIcons.has(label);
     if (this.scene.textures.exists('ui-button-plate')) {
       const capWidth = Math.min(width * .28, height * 300 / 404);
       const centerWidth = Math.max(1, width - capWidth * 2);
-      const tint = hot ? 0xfff1d4 : isControlIcon ? 0xf3dcb8 : primary ? 0xffffff : 0xd0c1a8;
+      const tint = pressed ? 0xc7a27b : hot ? 0xfff1d4 : isControlIcon ? 0xf3dcb8 : primary ? 0xffffff : 0xd0c1a8;
       const plate = [
         this.acquireImage(x, y, 'ui-button-plate', 'left-cap').setOrigin(0).setDisplaySize(capWidth, height),
         this.acquireImage(x + capWidth, y, 'ui-button-plate', 'center').setOrigin(0).setDisplaySize(centerWidth, height),
         this.acquireImage(x + capWidth + centerWidth, y, 'ui-button-plate', 'right-cap').setOrigin(0).setDisplaySize(capWidth, height),
       ];
-      plate.forEach(part => part.setTint(tint));
+      plate.forEach(part => part.setTint(tint).setAlpha(enabled ? 1 : .40));
       this.addToRoot(plate);
-      if (hot) this.buttonHover(plate, y, height);
+      if (hot && !pressed) this.buttonHover(plate, y, height);
       if (!isControlIcon && width >= height * 5) this.buttonGearTrain(x, y, width, height, hot);
     } else {
       const g = this.acquireGraphics();
@@ -508,7 +575,7 @@ export class PhaserHUD {
     if (isControlIcon) {
       const icon = this.acquireText(x + width / 2, y + height / 2, label, {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(height * .68)}px`,
-        color: hot ? '#fff8e8' : '#f4dfba', stroke: '#171014', strokeThickness: 2, resolution: 2,
+        color: !enabled ? '#978b84' : hot ? '#fff8e8' : '#f4dfba', stroke: '#171014', strokeThickness: 1, resolution: 2,
       }).setOrigin(.5);
       this.addToRoot(icon);
     }
@@ -518,7 +585,7 @@ export class PhaserHUD {
       const caption = this.titleText(label, x + width / 2, y + height / 2, fontSize, hot ? '#fff8e0' : '#fff0d4', width - sidePadding * 2, .5);
       caption.setOrigin(.5, .5);
     }
-    this.zones.push({ x, y, width, height, action, value });
+    if (enabled) this.zones.push({ ...hitArea, action, value });
   }
 
   private buttonHover(plate: Phaser.GameObjects.Image[], y: number, height: number): void {
@@ -556,14 +623,19 @@ export class PhaserHUD {
 
   private header(): void {
     const compact = this.compactLayout;
+    const narrow = this.narrowPortrait;
+    const controlWidth = narrow ? 33 : 36;
+    const controlStep = narrow ? 35 : 40;
+    const controlRight = this.width - this.left.x - 6;
+    const firstControl = controlRight - controlWidth - controlStep * 3;
     const stageName = this.ui.run.stage === 'defeat' ? 'КОНЕЦ ЗАБЕГА' : `АКТ 1 · СПУСК ${this.ui.run.room}/${RUN_ROOM_COUNT}`;
     if (this.ui.run.stage !== 'opening' && this.ui.run.stage !== 'victory') {
       const controlsLeft = this.width - 162 - this.left.x;
       const centeredWidth = 2 * (controlsLeft - this.width / 2 - 8);
-      const panelW = compact
+      const panelW = narrow ? Math.max(1, firstControl - 10) : compact
         ? Math.min(420, this.width * .74)
         : Math.min(420, this.width * .57, Math.max(1, centeredWidth >= 180 ? centeredWidth : controlsLeft - 16));
-      const panelX = compact || centeredWidth >= 180 ? (this.width - panelW) / 2 : 8;
+      const panelX = narrow ? 5 : compact || centeredWidth >= 180 ? (this.width - panelW) / 2 : 8;
       const panelH = compact ? 32 : Math.min(58, Math.max(54, this.height * .06));
       const panelY = 3;
       this.panelTexture(panelX, panelY, panelW, panelH);
@@ -574,18 +646,27 @@ export class PhaserHUD {
       if (label.width > panelW - 20) label.setScale((panelW - 20) / label.width);
       this.addToRoot(label);
     }
-    const controlY = compact ? 36 : 5;
+    const controlY = compact && !narrow ? 36 : 5;
     const controlHeight = compact ? 28 : this.height < 600 ? 28 : 34;
-    if (this.ui.run.stage !== 'opening') this.button('↻', this.width - 42 - this.left.x, controlY, 36, controlHeight, 'restart');
-    this.button('?', this.width - 82 - this.left.x, controlY, 36, controlHeight, 'help');
-    this.button('⛶', this.width - 122 - this.left.x, controlY, 36, controlHeight, 'fullscreen');
-    this.button('⚙', this.width - 162 - this.left.x, controlY, 36, controlHeight, 'options');
+    const controls = [['⚙', 'options'], ['⛶', 'fullscreen'], ['?', 'help'], ['↻', 'restart']] as const;
+    controls.forEach(([icon, action], index) => {
+      const x = firstControl + index * controlStep;
+      const hitArea = narrow ? { x, y: 1, width: controlStep - 1, height: 36 } : undefined;
+      this.button(icon, x, controlY, controlWidth, controlHeight, action, '', false, true, hitArea);
+    });
   }
 
   private party(drag?: DragPreview): void {
     const g = this.acquireGraphics(); this.addToRoot(g);
     const heroes = [...this.ui.state.heroes].sort((a, b) => a.slot - b.slot);
-    const gap = 7, { width: cardW, height: cardH } = this.partyCardSize();
+    const { width: cardW, height: cardH } = this.partyCardSize();
+    const boardSize = Math.max(1, Math.floor(Math.min(cardW - 4, cardH - 4)));
+    const boardSpan = boardSize * 2 + PARTY_CARD_GAP + 4;
+    const insetX = Math.round((this.left.width - boardSpan) / 2);
+    const insetY = Math.round((cardH * 2 + PARTY_CARD_GAP - boardSpan) / 2) + (this.narrowPortrait ? 2 : 6);
+    const nicheHeight = this.narrowPortrait ? .55 : INVENTORY_NICHE_HEIGHT;
+    const cell = Math.max(1, Math.floor(boardSize * nicheHeight / INVENTORY_GRID_SIZE));
+    const gridSize = INVENTORY_GRID_SIZE * cell;
     const compact = this.compactLayout;
     const inspectingInventory = ['reward', 'cache', 'cleared'].includes(this.ui.run.stage);
     for (let h = 0; h < heroes.length; h++) {
@@ -593,9 +674,8 @@ export class PhaserHUD {
       const classId = heroClassForActor(hero) ?? 'guard';
       const theme = classCardThemes[classId];
       const layout = dashboardLayout[classId];
-      const x = this.left.x + 6 + (h % 2) * (cardW + gap), y = this.left.y + 6 + Math.floor(h / 2) * (cardH + gap);
-      const boardSize = Math.max(1, Math.min(cardW - 4, cardH - 4));
-      const boardX = x + (cardW - boardSize) / 2, boardY = y + (cardH - boardSize) / 2;
+      const boardX = this.left.x + insetX + (h % 2) * (boardSize + PARTY_CARD_GAP + 4);
+      const boardY = this.left.y + insetY + Math.floor(h / 2) * (boardSize + PARTY_CARD_GAP + 4);
       const itemTooltipBounds = inspectingInventory ? {
         x: boardX + boardSize * layout.tray[0],
         y: boardY + boardSize * layout.tray[1],
@@ -611,8 +691,11 @@ export class PhaserHUD {
       const board = this.acquireImage(boardX, boardY, `ui-dashboard-${classId}`).setOrigin(0).setDisplaySize(boardSize, boardSize);
       if (stopped) board.setTint(mixTint(0x777777, 0xf4dfad, chargeRatio * .65));
       else if (hero.status === 'dead') board.setTint(0x777777);
+      else if (classId === 'pilgrim') board.setTint(0xe8e3dc);
       this.addToRoot(board);
-      if (stopped && this.ui.state.phase === 'combat') this.zones.push({ x, y, width: cardW, height: cardH, action: 'wind', value: hero.id });
+      if (stopped && this.ui.state.phase === 'combat') {
+        this.zones.push({ x: boardX, y: boardY, width: boardSize, height: boardSize, action: 'wind', value: hero.id });
+      }
       const isPuppet = hero.isPuppet;
       this.actorImage(hero.id, boardX + boardSize * .2045, boardY + boardSize * .212, boardSize * .23, hero.status, theme.dollTint);
       const nameX = boardX + boardSize * layout.labelX, nameY = boardY + boardSize * .115;
@@ -652,17 +735,19 @@ export class PhaserHUD {
       const animation = this.windAnimations.get(hero.id);
       const shownWind = animation ? animation.from + (animation.to - animation.from) * Math.min(1, 1 - Math.max(0, animation.until - this.now) / 260) : hero.windUpCharge;
       this.resourceModule(boardX, boardY, boardSize, hero, shownWind);
-      const cell = Math.max(1, Math.floor(boardSize * Math.min(layout.tray[2], layout.tray[3]) / INVENTORY_GRID_SIZE));
-      const gridSize = INVENTORY_GRID_SIZE * cell;
-      const gridX = boardX + boardSize * (layout.tray[0] + layout.tray[2] / 2) - gridSize / 2;
-      const gridY = boardY + boardSize * (layout.tray[1] + layout.tray[3] / 2) - gridSize / 2;
-      const availableInfoWidth = Math.max(1, gridX - (boardX + boardSize * .07));
-      const infoSize = Math.min(42, boardSize * .15, Math.max(1, availableInfoWidth - 2));
-      const infoX = boardX + Math.max(4, boardSize * .035), infoY = gridY + (gridSize - infoSize) / 2;
-      this.button('', infoX, infoY, infoSize, infoSize, 'hero-info', hero.id);
+      const gridX = Math.round(boardX + boardSize * (layout.tray[0] + layout.tray[2] / 2) - gridSize / 2);
+      const gridY = Math.round(boardY + boardSize * INVENTORY_NICHE_CENTER - gridSize / 2);
+      const infoSize = Math.max(12, Math.min(25, Math.round(boardSize * .085)));
+      const infoX = Math.round(boardX + boardSize * .366 - infoSize / 2);
+      const infoY = Math.round(boardY + boardSize * .314 - infoSize / 2);
+      const infoTop = infoY - 6;
+      const infoHitArea = this.narrowPortrait && !stopped ? {
+        x: infoX - 7, y: infoTop, width: infoSize + 14, height: Math.min(gridY - 1, infoY + infoSize + 4) - infoTop,
+      } : undefined;
+      this.button('', infoX, infoY, infoSize, infoSize, 'hero-info', hero.id, false, true, infoHitArea);
       const infoGlyph = this.acquireText(infoX + infoSize / 2, infoY + infoSize / 2, 'i', {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(infoSize * .67)}px`,
-        color: '#f6e4c1', stroke: '#171014', strokeThickness: 2, resolution: 2,
+        color: '#fff7dc', stroke: '#171014', strokeThickness: 1, resolution: 2,
       }).setOrigin(.5, .5);
       this.addToRoot(infoGlyph);
       const gridMarks = this.acquireGraphics();
@@ -690,7 +775,7 @@ export class PhaserHUD {
         .setDisplaySize(gridSize, gridSize).setAlpha(stopped ? .05 : .08);
       this.addToRoot(texture);
       const crispGrid = this.acquireGraphics();
-      crispGrid.lineStyle(1, stopped ? 0xbfc0c6 : theme.edge, .34);
+      crispGrid.lineStyle(1, stopped ? 0xbfc0c6 : theme.edge, .44);
       for (let line = 0; line <= INVENTORY_GRID_SIZE; line++) {
         crispGrid.lineBetween(gridX + line * cell, gridY, gridX + line * cell, gridY + gridSize);
         crispGrid.lineBetween(gridX, gridY + line * cell, gridX + gridSize, gridY + line * cell);
@@ -698,7 +783,9 @@ export class PhaserHUD {
       this.addToRoot(crispGrid);
       // Draw sprites only after every cell and grid line so the grid cannot cut through art.
       for (const item of itemOrigins) this.drawItem(item, gridX, gridY, cell, stopped || hero.status === 'rebirthing');
-      const inspected = drag?.heroId === hero.id && drag.anchor !== undefined ? { ...drag.item, cell: drag.anchor } : hero.items.find(item => item.id === this.hover?.itemId);
+      const inspected = drag
+        ? (drag.valid && drag.heroId === hero.id && drag.anchor !== undefined ? { ...drag.item, cell: drag.anchor } : undefined)
+        : hero.items.find(item => item.id === this.hover?.itemId);
       const relations = inspected ? synergyTargets(inspected) : [];
       const sourceCells = inspected ? occupiedCells(inspected, inspected.cell ?? 0) ?? [] : [];
       if (relations.length && sourceCells.length) {
@@ -718,8 +805,12 @@ export class PhaserHUD {
           if (match && neighbour) activeTargets.set(neighbour.id, { item: neighbour, negative: !!match.negative });
           const color = match?.negative ? 0xf09d58 : match ? 0x78f2ad : 0xe3bf72;
           const cx = gridX + inventoryColumn(index) * cell, cy = gridY + inventoryRow(index) * cell;
-          glow.fillStyle(color, match ? .26 : .12).fillRect(cx + 1, cy + 1, cell - 2, cell - 2);
-          glow.lineStyle(match ? 2 : 1, color, match ? 1 : .7).strokeRect(cx + 1, cy + 1, cell - 2, cell - 2);
+          if (match) {
+            glow.fillStyle(color, .20).fillRect(cx + 1, cy + 1, cell - 2, cell - 2);
+            glow.lineStyle(1, color, .85).strokeRect(cx + 1, cy + 1, cell - 2, cell - 2);
+          } else if (!neighbour) {
+            glow.fillStyle(color, .55).fillCircle(cx + cell / 2, cy + cell / 2, Math.max(1, cell * .09));
+          }
         }
         this.addToRoot(glow);
         for (const { item: target, negative } of activeTargets.values()) {
@@ -735,7 +826,7 @@ export class PhaserHUD {
           marker.fillStyle(0x162018, .96).fillCircle(markerX, markerY, markerRadius);
           marker.lineStyle(1, markerColor, .95).strokeCircle(markerX, markerY, markerRadius);
           this.addToRoot(marker);
-          this.addToRoot(this.acquireText(markerX, markerY, '✓', {
+          this.addToRoot(this.acquireText(markerX, markerY, negative ? '!' : '✓', {
             fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.max(5, Math.floor(markerRadius * 1.4))}px`,
             color: negative ? '#ffd3ad' : '#d8ffe5',
             stroke: '#10140f', strokeThickness: 1, resolution: 2,
@@ -791,51 +882,14 @@ export class PhaserHUD {
   private drawItem(item: CombatItem, gridX: number, gridY: number, cell: number, muted = false): void {
     const cells = rotatedShape(item);
     const anchorX = gridX + inventoryColumn(item.cell ?? 0) * cell, anchorY = gridY + inventoryRow(item.cell ?? 0) * cell;
-    const frame = itemFrames[item.definitionId ?? 'blade'] ?? 0;
-    const footprint = cells.map(([dx, dy]) => ({ x: anchorX + dx * cell, y: anchorY + dy * cell }));
-    const plate = this.acquireGraphics();
-    const rarityTint = muted ? 0x77777b : itemRarityTint(item.rarity);
-    for (const position of footprint) {
-      plate.fillStyle(0x17141c, 1).fillRect(position.x, position.y, cell, cell);
-      plate.fillStyle(rarityTint, .24).fillRect(position.x + 1, position.y + 1, cell - 2, cell - 2);
-    }
-    // Trace only the outside contour; interior item cells have no distracting grid seams.
-    const occupied = new Set(cells.map(([x, y]) => `${x},${y}`));
-    const selected = this.ui.selectedItem === item.id;
-    const hovered = this.hover?.itemId === item.id;
-    plate.lineStyle(selected ? 2.5 : hovered ? 2 : 1.5, selected ? 0x79d9dd : muted && hovered ? 0xc3c3c6 : rarityTint, .95);
-    cells.forEach(([dx, dy], index) => {
-      const { x, y } = footprint[index]!;
-      if (!occupied.has(`${dx},${dy - 1}`)) plate.lineBetween(x, y, x + cell, y);
-      if (!occupied.has(`${dx + 1},${dy}`)) plate.lineBetween(x + cell, y, x + cell, y + cell);
-      if (!occupied.has(`${dx},${dy + 1}`)) plate.lineBetween(x, y + cell, x + cell, y + cell);
-      if (!occupied.has(`${dx - 1},${dy}`)) plate.lineBetween(x, y, x, y + cell);
-    });
-    this.addToRoot(plate);
-    const art = itemCatalog[item.definitionId as keyof typeof itemCatalog] ?? CLASS_ITEM_ART.blade;
-    const image = this.acquireImage(0, 0, itemAtlases[item.definitionId ?? ''] ?? 'items-guard', frame);
+    this.drawItemFootprint(item, cells, anchorX, anchorY, cell, muted);
+    const image = this.drawFootprintArt(item, cells, anchorX, anchorY, cell);
     if (muted) image.setTint(0xb0b0b3);
-    const turns = ((item.rotation ?? 0) % 4 + 4) % 4;
-    const oddTurn = turns % 2 === 1;
-    const artWidth = oddTurn ? art.content.height : art.content.width;
-    const artHeight = oddTurn ? art.content.width : art.content.height;
-    const bounds = itemArtBounds(cells, anchorX, anchorY, cell, artWidth, artHeight);
-    const { centerX, centerY } = bounds;
-    const inset = Math.max(1, cell * .04);
-    const fitWidth = Math.max(1, bounds.right - bounds.left - inset * 2);
-    const fitHeight = Math.max(1, bounds.bottom - bounds.top - inset * 2);
-    const baseScale = Math.min(fitWidth / artWidth, fitHeight / artHeight);
-    const angle = turns * Math.PI / 2;
-    const offsetX = (art.content.x + art.content.width / 2 - image.width / 2) * baseScale;
-    const offsetY = (art.content.y + art.content.height / 2 - image.height / 2) * baseScale;
-    image.setScale(baseScale).setRotation(angle);
-    image.setPosition(centerX - (offsetX * Math.cos(angle) - offsetY * Math.sin(angle)), centerY - (offsetX * Math.sin(angle) + offsetY * Math.cos(angle)));
     const anticipation = this.ui.run.stage === 'battle' && this.ui.state.phase === 'combat' && this.ui.state.outcome === 'ongoing'
       && item.remainingMs > 0 && item.remainingMs < Math.min(300, item.cooldownMs * .2);
     if (anticipation) {
-      image.x += Math.sin(this.now / 38) * Math.min(1, inset * .35);
+      image.x += Math.sin(this.now / 38) * Math.min(1, Math.max(1, cell * .04) * .35);
     }
-    this.addToRoot(image);
     if (item.trigger !== 'passive' && item.effect !== 'passive') {
       const bottomY = Math.max(...cells.map(([, y]) => y));
       const bottomCells = cells.filter(([, y]) => y === bottomY).map(([x]) => x).sort((a, b) => a - b);
@@ -847,9 +901,12 @@ export class PhaserHUD {
       if (currentLength > barLength) { barStart = currentStart; barLength = currentLength; }
       const cooldown = Math.max(0, Math.min(1, 1 - item.remainingMs / Math.max(1, item.cooldownMs)));
       const g = this.acquireGraphics();
-      const trackX = anchorX + barStart * cell + 2, trackY = anchorY + (bottomY + 1) * cell - 5, trackWidth = Math.max(4, barLength * cell - 4);
-      g.fillStyle(0x211b1b, 1).fillRect(trackX, trackY, trackWidth, 3);
-      g.fillStyle(muted ? 0x96969a : anticipation ? 0xffd37b : 0xe5b75f, 1).fillRect(trackX, trackY, trackWidth * cooldown, 3);
+      const trackHeight = Math.max(1, Math.min(3, Math.round(cell * .1)));
+      const trackX = anchorX + barStart * cell + 2;
+      const trackY = anchorY + (bottomY + 1) * cell - trackHeight - 2;
+      const trackWidth = Math.max(4, barLength * cell - 4);
+      g.fillStyle(0x211b1b, 1).fillRect(trackX, trackY, trackWidth, trackHeight);
+      g.fillStyle(muted ? 0x96969a : anticipation ? 0xffd37b : 0xe5b75f, 1).fillRect(trackX, trackY, trackWidth * cooldown, trackHeight);
       this.addToRoot(g);
     }
   }
@@ -926,7 +983,7 @@ export class PhaserHUD {
       const maximum = isDoll ? hero.maxDurability : hero.maxHp;
       const value = this.acquireText(x + width / 2, y + height * .5, `${Math.ceil(current)} / ${maximum}`, {
         fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${Math.round(Math.max(8, Math.min(16, height * .74)))}px`,
-        color: '#fff1dc', stroke: '#171016', strokeThickness: 2, resolution: 2,
+        color: '#fff1dc', stroke: '#171016', strokeThickness: 1, resolution: 2,
       }).setOrigin(.5, .5);
       if (value.width > width * .67) value.setScale(width * .67 / value.width);
       value.setShadow(0, 1, '#100b10', 2, false, true);
@@ -949,7 +1006,7 @@ export class PhaserHUD {
 
   private room(drag?: DragPreview): void {
     const run = this.ui.run;
-    if (run.stage !== 'victory') {
+    if (run.stage !== 'victory' && run.stage !== 'cleared') {
       const title = this.roomTitle(run);
       this.panelTexture(this.right.x + 5, this.right.y + 3, this.right.width - 10, 27);
       if (run.stage !== 'opening') {
@@ -963,9 +1020,8 @@ export class PhaserHUD {
     else if (run.stage === 'reward' || run.stage === 'cache') this.rewards();
     else if (run.stage === 'workshop') this.workshop();
     else if (run.stage === 'event') this.event();
-    else if (run.stage === 'cleared') this.cleared();
+    else if (run.stage === 'cleared') this.cleared(drag?.item.id);
     else if (run.stage === 'victory' || run.stage === 'defeat') { this.battlefield(); this.ending(); }
-    if (drag?.heroId && drag.anchor !== undefined) this.drawDropFootprint(drag);
   }
 
   private openingModal(): void {
@@ -1383,128 +1439,108 @@ export class PhaserHUD {
 
   private choices(): void {
     const choices = this.ui.roomChoices;
-    const y0 = this.right.y + 50, h = Math.min(54, this.right.height * .12), gap = 8;
-    choices.forEach((choice, index) => this.button(choice.label, this.right.x + 12, y0 + index * (h + gap), this.right.width - 24, h, 'room', choice.id, choice.kind === 'battle' || choice.kind === 'boss'));
+    const gap = 5, top = this.field.y + 12;
+    const height = Math.min(this.compactLayout ? 91 : 110,
+      (this.field.height - 24 - gap * Math.max(0, choices.length - 1)) / Math.max(1, choices.length));
+    const width = this.right.width - 28;
+    choices.forEach((choice, index) => {
+      const x = this.right.x + 14, y = top + index * (height + gap);
+      const style = ROUTE_CARD_STYLE[choice.kind];
+      const hot = this.hover?.action === 'room' && this.hover.value === choice.id;
+      const color = '#' + style.color.toString(16);
+      this.panelTexture(x, y, width, height);
+      const accent = this.acquireGraphics();
+      const iconX = x + 39, iconY = y + height / 2;
+      accent.fillStyle(style.color, hot ? .24 : .12).fillCircle(iconX, iconY, 18);
+      accent.lineStyle(1, style.color, hot ? 1 : .6).strokeCircle(iconX, iconY, 18);
+      if (hot) accent.strokeRoundedRect(x + 5, y + 5, width - 10, height - 10, 4);
+      this.addToRoot(accent);
+      if (choice.kind === 'cache') this.cardGlyph('key', iconX, iconY, style.color);
+      else this.text(style.icon, iconX, iconY, 19, color, undefined, .5).setOrigin(.5);
+      const textOffset = this.compactLayout ? 10 : 13;
+      this.text(style.label, x + 68, iconY - textOffset, this.compactLayout ? 11 : 13, color).setOrigin(0, .5);
+      this.titleText(choice.label, x + 68, iconY + textOffset, this.compactLayout ? 18 : 24, '#fff0d4', width - 112).setOrigin(0, .5);
+      this.text('›', x + width - 27, iconY, 21, color, undefined, .5).setOrigin(.5);
+      this.zones.push({ x, y, width, height, action: 'room', value: choice.id });
+    });
   }
 
   private rewards(): void {
-    const offers = this.ui.run.offers, compact = this.compactLayout;
-    const gap = compact ? 6 : 10;
-    const y0 = this.field.y + 28;
-    this.text('Выберите один предмет', this.right.x + 12, this.field.y + 5, compact ? 13 : 16, '#f3e5cc', this.right.width - 24);
-    const available = Math.max(1, this.right.y + this.right.height - (compact ? 14 : 30) - y0);
-    const height = Math.max(58, Math.min(compact ? 112 : 166, (available - gap * Math.max(0, offers.length - 1)) / Math.max(1, offers.length)));
-    offers.forEach((item, index) => {
-      const x = this.right.x + 12, y = y0 + index * (height + gap), w = this.right.width - 24;
-      const color = itemRarityTint(item.rarity);
-      const hot = this.hover?.action === 'claim' && this.hover.value === item.id;
-      const shortCard = height < 126;
-      const tinyCard = height < 70;
-      const cardCompact = compact || shortCard;
-      const iconSize = Math.min(height - 14, cardCompact ? 62 : 102);
-      const iconWell = { x: x + 7, y: y + 7, width: iconSize + 14, height: height - 14 };
-      const iconX = iconWell.x + iconWell.width / 2, iconY = y + height / 2;
-      const textX = iconWell.x + iconWell.width + (cardCompact ? 12 : 18), textWidth = Math.max(50, w - (textX - x) - 12);
-      this.panelTexture(x, y, w, height);
-      const g = this.acquireGraphics();
-      g.fillStyle(color, hot ? .22 : .08).fillRoundedRect(x + 2, y + 2, w - 4, height - 4, 5);
-      g.lineStyle(hot ? 2 : 1, hot ? mixTint(color, 0xfff0d0, .28) : color, hot ? .8 : .48).strokeRoundedRect(x, y, w, height, 6);
-      if (hot) g.lineStyle(1, 0xe2c18a, .58).strokeRoundedRect(x + 4, y + 4, w - 8, height - 8, 4);
-      this.addToRoot(g);
-      this.panelTexture(iconWell.x, iconWell.y, iconWell.width, iconWell.height);
-      this.frameCorners(x, y, w, height, Math.min(compact ? 24 : 40, height * .3), .95);
-      this.drawItemShape(item, iconX, iconY, iconSize * .72);
-      const titleY = y + (shortCard ? Math.min(23, height * .2) : compact ? 20 : 24);
-      const ctaW = Math.min(compact ? 82 : 126, w * .25);
-      const ctaH = compact ? Math.min(44, height - 10) : 36;
-      const ctaX = x + w - ctaW - (compact ? 22 : 24);
-      const detailInset = compact ? Math.min(48, Math.max(46, height * .5)) : Math.min(42, height * .42);
-      const detailY = y + detailInset;
-      const rewardTooltipBounds = {
-        x: textX,
-        y: detailY,
-        width: Math.max(1, ctaX - textX - 8),
-        height: Math.max(1, y + height - detailY - 6),
-      };
-      const copyWidth = Math.max(50, Math.min(textWidth - ctaW - 12, 65 * (cardCompact ? 13 : 24) * .53));
-      const title = this.titleText(item.name, textX, titleY, cardCompact ? 14 : 24, '#fff0cf', copyWidth);
-      if (title.scaleX < .82) {
-        title.setScale(1);
-        let readableName = item.name;
-        while (readableName.length > 5 && title.width > copyWidth) {
-          readableName = `${readableName.slice(0, -2).trimEnd()}…`;
-          title.setText(readableName);
-        }
-      }
-      const titleSpace = tinyCard ? 12 : shortCard || compact ? 19 : 27;
-      if (title.displayHeight > titleSpace) title.setScale(title.scaleX * titleSpace / title.displayHeight);
-      const rarityText = `${rarityLabels[item.rarity ?? 'common']}  ·  ${categoryLabels[item.category ?? 'relic']}`;
-      const rarity = this.acquireText(textX, titleY + (tinyCard ? 11 : shortCard || compact ? 14 : 29), rarityText, {
-        fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${cardCompact ? 11 : 13}px`,
-        color: item.rarity === 'common' || !item.rarity ? '#cfcbd0' : `#${mixTint(color, 0xffffff, .42).toString(16).padStart(6, '0')}`, stroke: '#171414', strokeThickness: 1, resolution: 2,
-      });
-      if (rarity.width > copyWidth) rarity.setScale(copyWidth / rarity.width);
-      this.addToRoot(rarity);
-      const descY = titleY + (cardCompact ? 27 : 52);
-      const descriptionWidth = copyWidth;
-      const description = this.acquireText(textX, descY, shortCard ? '' : item.description ?? '', {
-        fontFamily: 'Georgia, serif', fontSize: `${cardCompact ? 11 : 15}px`, lineSpacing: cardCompact ? 2 : 3,
-        color: '#eadfce', stroke: '#171414', strokeThickness: 1, resolution: 2,
-        wordWrap: { width: descriptionWidth },
-      });
-      const descriptionSpace = Math.max(1, y + height - (cardCompact ? 40 : 60) - descY);
-      if (shortCard || descriptionSpace < 8) description.setVisible(false);
-      if (compact && description.height > descriptionSpace) {
-        // Preserve a readable single line on small screens; the full description stays in the tooltip.
-        let excerpt = item.description ?? '';
-        description.setWordWrapWidth(0);
-        while (excerpt.length && description.width > descriptionWidth) {
-          excerpt = excerpt.slice(0, -1);
-          description.setText(`${excerpt.trimEnd()}…`);
-        }
-        if (description.height > descriptionSpace) description.setVisible(false);
-      } else if (description.height > descriptionSpace) description.setScale(descriptionSpace / description.height);
-      this.addToRoot(description);
-      if (height >= 58) {
-        const cooldown = `⏱ ${(item.cooldownMs / 1000).toFixed(1)}с`;
-        let stats: string;
-        if (item.effect === 'wind') stats = `⚙ ЗАВОД +${formatItemNumber(item.windAmount ?? 0)}  ·  ${cooldown}`;
-        else if (item.effect === 'heal') stats = `✚ ЛЕЧЕНИЕ ${formatItemNumber(item.damage)}  ·  ${cooldown}`;
-        else if (item.trigger === 'passive') {
-          const bonus = item.passiveBonuses;
-          const parts = [bonus?.armor ? `БРОНЯ +${formatItemNumber(bonus.armor)}` : '', bonus?.damage ? `УРОН +${formatItemNumber(bonus.damage)}` : '',
-            bonus?.healing ? `ЛЕЧЕНИЕ +${formatItemNumber(bonus.healing)}` : '', bonus?.wind ? `ЗАВОД +${formatItemNumber(bonus.wind)}` : '',
-            bonus?.cooldownFactor && bonus.cooldownFactor < 1 ? `КУЛДАУН −${Math.round((1 - bonus.cooldownFactor) * 100)}%` : ''].filter(Boolean);
-          stats = `◆ ${parts.join('  ·  ') || 'ПАССИВНОЕ СВОЙСТВО'}`;
-        } else {
-          const damageIcon = item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
-          const damageType = item.damageType === 'fire' ? 'ОГОНЬ' : item.damageType === 'arcane' ? 'МИСТИКА' : 'ФИЗ.';
-          stats = `${damageIcon} УРОН ${formatItemNumber(item.damage)} ${damageType}  ·  ${cooldown}`;
-        }
-        if (shortCard && item.trigger !== 'passive' && item.effect !== 'passive') {
-          const icon = item.effect === 'wind' ? '⚙' : item.effect === 'heal' ? '✚' : item.damageType === 'fire' ? '♨' : item.damageType === 'arcane' ? '✦' : '⚔';
-          const amount = item.effect === 'wind' ? item.windAmount ?? 0 : item.damage;
-          const label = item.effect === 'wind' ? 'ЗАВОД' : item.effect === 'heal' ? 'ЛЕЧЕНИЕ' : 'УРОН';
-          stats = `${icon} ${label} ${formatItemNumber(amount)} · ${cooldown}`;
-        }
-        let statsBottomInset = compact ? 39 : 54;
-        if (shortCard) statsBottomInset = height >= 96 ? 42 : 34;
-        if (tinyCard) statsBottomInset = 27;
-        const statLabel = this.acquireText(textX, y + height - statsBottomInset, stats, {
-          fontFamily: 'Georgia, serif', fontStyle: 'bold', fontSize: `${tinyCard ? 9 : cardCompact ? 11 : 14}px`, color: '#f2cf80',
-          stroke: '#171414', strokeThickness: 1, resolution: 2,
-        });
-        const statWidth = Math.max(1, compact ? descriptionWidth : ctaX - textX - 10);
-        if (statLabel.width > statWidth) statLabel.setScale(statWidth / statLabel.width);
-        this.addToRoot(statLabel);
-      }
-      this.zones.push({ x, y, width: w, height, action: 'claim', value: item.id });
-      this.zones.push({
-        ...iconWell, action: 'inspect', value: item.id, itemId: item.id,
-        tooltipBounds: rewardTooltipBounds,
-      });
-      this.button('Выбрать', ctaX, y + (height - ctaH) / 2, ctaW, ctaH, 'claim', item.id);
+    const offers = this.ui.run.offers;
+    if (!offers.length) return;
+    const compact = this.compactLayout, narrow = this.narrowPortrait;
+    const gap = narrow ? 5 : 8;
+    const x = this.right.x + 10, y = this.field.y + (narrow ? 20 : 26), width = this.right.width - 20;
+    this.text('Выберите один трофей', x + 5, this.field.y + 2, compact ? 12 : 15, '#e5d2b4', width - 10);
+    const available = this.right.y + this.right.height - y - 12 - gap * (offers.length - 1);
+    const height = Math.max(1, Math.min(compact ? 106 : 112, Math.floor(available / offers.length)));
+    offers.forEach((item, index) => this.rewardCard(item, x, y + index * (height + gap), width, height));
+  }
+
+  private rewardCard(item: CombatItem, x: number, y: number, width: number, height: number): void {
+    const narrow = this.narrowPortrait, compact = this.compactLayout;
+    const color = itemRarityTint(item.rarity);
+    const hot = this.hover?.value === item.id;
+    const legendary = item.rarity === 'legendary';
+    const back = this.acquireGraphics();
+    back.fillStyle(hot ? 0x36232e : 0x261923, .98).fillRoundedRect(x, y, width, height, 5);
+    back.lineStyle(1, 0x7e6361, .70).strokeRoundedRect(x + .5, y + .5, width - 1, height - 1, 5);
+    back.fillStyle(color, legendary ? .92 : .66).fillRect(x + 3, y + 8, legendary ? 3 : 2, height - 16);
+    this.addToRoot(back);
+
+    const iconSize = Math.min(height - 25, narrow ? 41 : compact ? 58 : 86);
+    const iconArea = Math.max(40, iconSize + (narrow ? 12 : 22));
+    const iconX = x + 7 + iconArea / 2, iconY = y + height / 2 - 5;
+    this.drawItemShape(item, iconX, iconY, iconSize, 'reward');
+    this.text('Детали', iconX, y + height - 17, narrow ? 9 : 10, '#d5bdab', undefined, .5);
+
+    const buttonWidth = narrow ? 79 : compact ? 94 : 136;
+    const buttonHeight = Math.min(height - 8, narrow ? 46 : compact ? 48 : 50);
+    const buttonX = x + width - buttonWidth - 7;
+    const textX = x + 9 + iconArea;
+    const textWidth = buttonX - textX - 8;
+    let lineY = y + (narrow ? 4 : 11);
+    const title = this.acquireText(textX, lineY, item.name, {
+      fontFamily: '"Woundbound Title", Georgia, serif', fontStyle: 'bold', fontSize: narrow ? 13 : compact ? 16 : 22,
+      color: '#fff0d8', wordWrap: { width: textWidth, useAdvancedWrap: true }, resolution: 2,
     });
+    this.addToRoot(title);
+    lineY += title.height + (narrow ? 0 : 2);
+    const rarity = `#${mixTint(color, 0xffffff, .37).toString(16).padStart(6, '0')}`;
+    const meta = this.simpleWrappedText(`${rarityLabels[item.rarity ?? 'common']} · ${categoryLabels[item.category ?? 'relic']}`,
+      textX, lineY, narrow ? 9 : compact ? 10 : 12, rarity, textWidth);
+    lineY += meta.height + 1;
+    const stats = this.simpleWrappedText(this.rewardSummary(item), textX, lineY, narrow ? 11 : compact ? 12 : 14, '#efd194', textWidth);
+    lineY += stats.height + (narrow ? 0 : 4);
+    if (!narrow && item.description && lineY + 16 <= y + height - 6) {
+      const description = this.simpleWrappedText(item.description, textX, lineY, compact ? 12 : 15, '#dfd3cc', textWidth);
+      if (lineY + description.height > y + height - 5) {
+        const lines = description.getWrappedText();
+        const lineHeight = Math.ceil(description.height / Math.max(1, lines.length));
+        const visibleLines = Math.floor((y + height - 5 - lineY) / lineHeight);
+        if (visibleLines < 1) description.setVisible(false);
+        else description.setText(`${lines.slice(0, visibleLines).join('\n').replace(/[^\S\n]+\S+$/u, '')}…`);
+      }
+    }
+
+    this.zones.push({ x, y, width: buttonX - x, height, action: 'inspect-reward', value: item.id });
+    this.zones.push({ x: x + 5, y, width: iconArea + 4, height, action: 'inspect-reward', value: item.id, itemId: item.id });
+    this.button('Выбрать', buttonX, y + (height - buttonHeight) / 2, buttonWidth, buttonHeight, 'claim', item.id);
+  }
+
+  private rewardSummary(item: CombatItem): string {
+    const number = formatItemNumber;
+    if (item.trigger === 'passive' || item.effect === 'passive') {
+      const bonus = item.passiveBonuses;
+      if (bonus?.armor && item.classAffinity) {
+        return `Броня +${number(bonus.armor)} · ${ITEM_CLASS_LABELS[item.classAffinity]}`;
+      }
+      return this.ui.itemDetails(item).stats[0] ?? 'Пассивное свойство';
+    }
+    const cooldown = number(Math.round(item.cooldownMs / 100) / 10);
+    const label = item.effect === 'heal' ? 'Лечение' : item.effect === 'wind' ? 'Завод' : 'Урон';
+    const amount = item.effect === 'wind' ? item.windAmount ?? item.damage : item.damage;
+    return `${label} ${number(Math.round(amount))} · ${cooldown} с`;
   }
 
   private workshop(): void {
@@ -1542,66 +1578,115 @@ export class PhaserHUD {
     if (repair) this.button('Починить кукол · +15 прочности', x, y + (heal ? 96 : 46), w, 40, 'event-choice', 'repair');
   }
 
-  private cleared(): void {
-    const x = this.right.x + 12, w = this.right.width - 24;
-    const floorBottom = this.right.y + this.right.height - 60;
-    this.zones.push({ x: this.field.x, y: this.field.y, width: this.field.width, height: Math.max(0, floorBottom - this.field.y), action: 'floor-drop', floorDrop: true });
-    const y = this.field.y + 30;
-    const contentX = x + 22;
-    const contentWidth = w - 44;
-    this.panelTexture(x - 6, this.field.y + 2, w + 12, Math.max(1, floorBottom - this.field.y - 8));
-    if (this.ui.state.floor.length) {
-      const [firstItem] = this.ui.state.floor;
-      const floorLabel = this.ui.run.current === 'cache' && this.ui.state.floor.length === 1
-        ? `Общая добыча · ${firstItem!.name}`
-        : `Общая добыча · ${this.ui.state.floor.length}`;
-      this.text(floorLabel, contentX, y, 13, '#f0cc86', contentWidth);
-      this.drawLooseItems(this.ui.state.floor, contentX, y + 24, contentWidth);
-    } else {
-      const message = clearedCopy[this.ui.run.current].message;
-      if (message) this.text(message, contentX, y, this.compactLayout ? 11 : 13, '#e1cfaf', contentWidth);
-    }
-    this.button('Выбрать следующую комнату', x, this.right.y + this.right.height - 60, w, 50, 'route', '', true);
+  private poolContentBounds() {
+    const bottomInset = this.narrowPortrait ? 20 : this.wideLootLayout ? 40 : POOL_BOTTOM_INSET;
+    return {
+      panelTop: this.right.y + POOL_TOP_INSET,
+      top: this.right.y + (this.narrowPortrait ? 52 : POOL_GRID_OFFSET),
+      bottom: this.right.y + this.right.height - POOL_ROUTE_HEIGHT - bottomInset,
+    };
   }
 
-  private drawLooseItems(items: CombatItem[], x: number, y: number, width: number): number {
-    const size = this.compactLayout ? 62 : 76, gap = 8;
-    const columns = Math.max(1, Math.floor((width + gap) / (size + gap)));
-    items.forEach((item, index) => {
-      const bx = x + index % columns * (size + gap), by = y + Math.floor(index / columns) * (size + gap);
-      this.drawItemShape(item, bx + size / 2, by + size / 2, size - 4);
+  private cleared(draggedItemId?: string): void {
+    const x = this.right.x + 12, w = this.right.width - 24;
+    const floorBottom = this.right.y + this.right.height - POOL_ROUTE_HEIGHT;
+    const bounds = this.poolContentBounds();
+    const pool = { x: x - 6, y: bounds.panelTop, width: w + 12, height: Math.max(1, floorBottom - bounds.panelTop - 6) };
+    this.zones.push({ ...pool, action: 'floor-drop', floorDrop: true });
+    const inset = this.narrowPortrait ? 10 : 22;
+    const contentX = x + inset;
+    const contentWidth = w - inset * 2;
+    this.panelTexture(pool.x, pool.y, pool.width, pool.height);
+    this.drawLooseItems(this.ui.state.floor, contentX, contentWidth, bounds, draggedItemId);
+    if (!this.ui.state.floor.length) {
+      const message = clearedCopy[this.ui.run.current].message;
+      if (message) this.text(message, contentX, bounds.top, this.compactLayout ? 11 : 13, '#e1cfaf', contentWidth);
+    }
+    this.button('Выбрать следующую комнату', x, floorBottom, w, 50, 'route', '', true);
+  }
+
+  private drawLooseItems(items: CombatItem[], x: number, width: number, bounds: { top: number; bottom: number }, draggedItemId?: string): void {
+    const narrow = this.narrowPortrait;
+    const wide = this.wideLootLayout;
+    const gap = narrow ? 6 : POOL_TILE_GAP;
+    const gridY = bounds.top;
+    const y = gridY - (narrow ? 24 : 32);
+    const maxTile = narrow ? 54 : this.compactLayout ? 62 : wide ? 112 : 76;
+    const { size, columns, rows } = lootGrid(width, bounds.bottom - gridY, gap, maxTile, wide ? 40 : 0);
+    const pageSize = columns * rows;
+    const pages = Math.max(1, Math.ceil(items.length / pageSize));
+    this.lootPage = Math.min(this.lootPage, pages - 1);
+    const navigationX = x + width - 132;
+    this.titleText(`${this.roomTitle(this.ui.run)} · ${items.length}`, x, y + 3, wide ? 21 : 16, '#f0d39e', width - (pages > 1 ? 140 : 0));
+    if (pages > 1) {
+      this.text(`${this.lootPage + 1} / ${pages}`, navigationX + 66, y + 4, 14, '#f3e5cc', undefined, .5);
+      this.button('‹', navigationX, y - 6, 38, 30, 'loot-page', '-1', false, this.lootPage > 0);
+      this.button('›', navigationX + 94, y - 6, 38, 30, 'loot-page', '1', false, this.lootPage + 1 < pages);
+    }
+    const first = this.lootPage * pageSize;
+    items.slice(first, first + pageSize).forEach((item, index) => {
+      const bx = Math.round(x + index % columns * (size + gap));
+      const by = Math.round(gridY + Math.floor(index / columns) * (size + gap));
+      const tile = this.acquireGraphics();
+      const held = item.id === draggedItemId;
+      const hovered = !held && this.hover?.itemId === item.id;
+      const rarity = itemRarityTint(item.rarity);
+      tile.fillStyle(rarity, hovered ? .19 : .07).fillRoundedRect(bx, by, size, size, 3);
+      if (hovered) tile.lineStyle(1, rarity, .8).strokeRoundedRect(bx, by, size, size, 3);
+      this.addToRoot(tile);
+      this.drawItemShape(item, bx + size / 2, by + size / 2, size - 4, held ? 'held' : 'loot');
       this.zones.push({ x: bx, y: by, width: size, height: size, action: 'item', value: item.id, itemId: item.id, floorDrop: true });
     });
-    return y + Math.ceil(items.length / columns) * (size + gap);
   }
 
-  private drawItemShape(item: CombatItem, centerX: number, centerY: number, size: number): void {
+  private drawItemShape(item: CombatItem, centerX: number, centerY: number, size: number, mode: 'reward' | 'loot' | 'held' = 'reward'): void {
     const shape = rotatedShape(item);
-    if (!shape.length) return;
-    const columns = Math.max(...shape.map(([column]) => column)) + 1;
-    const rows = Math.max(...shape.map(([, row]) => row)) + 1;
-    const hasCutout = shape.length < columns * rows;
-    const gridSize = hasCutout ? size * .36 : size;
-    const gridCenterX = hasCutout ? centerX + size * .32 : centerX;
-    const cellSize = Math.floor(gridSize / Math.max(1, columns, rows));
-    if (cellSize < 2) return;
-    const left = gridCenterX - columns * cellSize / 2;
-    const top = centerY - rows * cellSize / 2;
-    const tint = itemRarityTint(item.rarity);
-    const grid = this.acquireGraphics();
-    grid.fillStyle(0x161318, .95).fillRect(left, top, columns * cellSize, rows * cellSize);
-    for (const [column, row] of shape) {
-      const x = left + column * cellSize, y = top + row * cellSize;
-      grid.fillStyle(tint, .32).fillRect(x, y, cellSize, cellSize);
+    const columns = Math.max(1, ...shape.map(([x]) => x + 1));
+    const rows = Math.max(1, ...shape.map(([, y]) => y + 1));
+    const cell = Math.max(1, Math.floor(size / Math.max(columns, rows)));
+    const x = Math.round(centerX - columns * cell / 2);
+    const y = Math.round(centerY - rows * cell / 2);
+    const footprint = this.drawItemFootprint(item, shape, x, y, cell, false, true);
+    if (mode === 'held') footprint.setAlpha(.35);
+    else if (mode === 'reward') this.itemImage(item, centerX, centerY, size * .94);
+    else if (mode === 'loot' && shape.length < columns * rows) this.itemImage(item, centerX, centerY, size * .86);
+    else this.drawFootprintArt(item, shape, x, y, cell);
+  }
+
+  private drawFootprintArt(item: CombatItem, shape: readonly ItemCell[], x: number, y: number, cell: number): Phaser.GameObjects.Image {
+    const art = itemCatalog[item.definitionId as keyof typeof itemCatalog] ?? CLASS_ITEM_ART.blade;
+    const oddTurn = (item.rotation ?? 0) % 2 !== 0;
+    const bounds = itemArtBounds(shape, x, y, cell,
+      oddTurn ? art.content.height : art.content.width, oddTurn ? art.content.width : art.content.height);
+    const trim = Math.max(1, cell * .04) * 2;
+    return this.itemImage(item, bounds.centerX, bounds.centerY,
+      Math.max(1, bounds.right - bounds.left - trim), Math.max(1, bounds.bottom - bounds.top - trim));
+  }
+
+  private drawItemFootprint(item: CombatItem, shape: readonly ItemCell[], x: number, y: number, cell: number, muted: boolean, showCells = false): Phaser.GameObjects.Graphics {
+    const outline = this.acquireGraphics();
+    const rarity = muted ? 0x77777b : itemRarityTint(item.rarity);
+    const fill = mixTint(0x17141c, rarity, item.rarity === 'common' ? .16 : .31);
+    const selected = this.ui.selectedItem === item.id;
+    const hovered = this.hover?.itemId === item.id;
+    const common = !item.rarity || item.rarity === 'common';
+    const occupied = new Set(shape.map(([dx, dy]) => `${dx},${dy}`));
+    outline.fillStyle(fill, 1);
+    for (const [dx, dy] of shape) outline.fillRect(x + dx * cell, y + dy * cell, cell, cell);
+    if (showCells) {
+      outline.lineStyle(1, rarity, .24);
+      for (const [dx, dy] of shape) outline.strokeRect(x + dx * cell, y + dy * cell, cell, cell);
     }
-    this.addToRoot(grid);
-    if (hasCutout) this.itemImage(item, centerX - size * .18, centerY, size * .64);
-    else this.itemImage(item, centerX, centerY, columns * cellSize * .9, rows * cellSize * .9);
-    const lines = this.acquireGraphics();
-    for (const [column, row] of shape) {
-      lines.lineStyle(1, tint, .68).strokeRect(left + column * cellSize, top + row * cellSize, cellSize, cellSize);
+    outline.lineStyle(selected || hovered ? 2 : 1, selected ? 0x79d9dd : rarity, selected || hovered ? 1 : common ? .45 : .82);
+    for (const [dx, dy] of shape) {
+      const left = x + dx * cell, top = y + dy * cell;
+      if (!occupied.has(`${dx},${dy - 1}`)) outline.lineBetween(left, top, left + cell, top);
+      if (!occupied.has(`${dx + 1},${dy}`)) outline.lineBetween(left + cell, top, left + cell, top + cell);
+      if (!occupied.has(`${dx},${dy + 1}`)) outline.lineBetween(left, top + cell, left + cell, top + cell);
+      if (!occupied.has(`${dx - 1},${dy}`)) outline.lineBetween(left, top, left, top + cell);
     }
-    this.addToRoot(lines);
+    this.addToRoot(outline);
+    return outline;
   }
 
   private ending(): void {
@@ -1615,28 +1700,56 @@ export class PhaserHUD {
     this.button('Начать новый забег', x, this.right.y + this.right.height - 76, w, 64, 'restart', '', true);
   }
 
-  private drawDropFootprint(drag: DragPreview): void {
-    if (!drag.heroId || drag.anchor === undefined) return;
-    const cells = occupiedCells(drag.item, drag.anchor) ?? [];
-    const g = this.acquireGraphics(); const color = drag.valid ? 0xf3ba63 : 0xef766c;
-    cells.forEach(index => {
-      const cell = this.cells.get(`${drag.heroId}:${index}`); if (!cell) return;
-      g.fillStyle(color, .18).fillRect(cell.x, cell.y, cell.size, cell.size);
-      g.fillStyle(color, .23).fillRect(cell.x + 2, cell.y + 2, cell.size - 4, cell.size - 4);
-      g.lineStyle(1, color, .9).strokeRect(cell.x + 1, cell.y + 1, cell.size - 2, cell.size - 2);
-    }); this.addToRoot(g);
+  private drawDropFootprint(drag: DragPreview): boolean {
+    if (drag.heroId === undefined || drag.targetCell === undefined) return false;
+    const grabbed = this.cells.get(`${drag.heroId}:${drag.targetCell}`);
+    if (!grabbed) return false;
+    const size = grabbed.size, x = grabbed.x - drag.grabX * size, y = grabbed.y - drag.grabY * size;
+    const column = inventoryColumn(drag.targetCell) - drag.grabX;
+    const row = inventoryRow(drag.targetCell) - drag.grabY;
+    const shape = rotatedShape(drag.item);
+    const target = this.ui.state.heroes.find(hero => hero.id === drag.heroId);
+    const occupied = new Set(target?.items.filter(item => item.id !== drag.item.id).flatMap(item => occupiedCells(item, item.cell) ?? []));
+    const tone = drag.valid ? 0x91e4d4 : 0xef8c83;
+    const outline = this.acquireGraphics();
+    const conflicts = this.acquireGraphics();
+    outline.lineStyle(2, tone, 1);
+    for (const [dx, dy] of shape) {
+      if (column + dx < 0 || row + dy < 0 || column + dx >= INVENTORY_GRID_SIZE || row + dy >= INVENTORY_GRID_SIZE) continue;
+      const left = x + dx * size, top = y + dy * size;
+      const index = (row + dy) * INVENTORY_GRID_SIZE + column + dx;
+      const blocked = occupied.has(index);
+      outline.fillStyle(blocked ? 0xc54244 : tone, blocked ? .55 : .25).fillRect(left, top, size, size);
+      outline.strokeRect(left + 1, top + 1, size - 2, size - 2);
+      if (blocked) {
+        const inset = size * .25;
+        conflicts.lineStyle(2, 0xffd4ca, 1);
+        conflicts.lineBetween(left + inset, top + inset, left + size - inset, top + size - inset);
+        conflicts.lineBetween(left + size - inset, top + inset, left + inset, top + size - inset);
+      }
+    }
+    this.addToRoot(outline);
+    if (drag.anchor !== undefined && occupiedCells(drag.item, drag.anchor)) {
+      this.drawFootprintArt(drag.item, shape, x, y, size).setAlpha(drag.valid ? .92 : .48);
+    }
+    this.addToRoot(conflicts);
+    return true;
   }
 
   private drawDrag(drag: DragPreview): void {
     const shape = rotatedShape(drag.item);
-    const size = Math.min(this.compactLayout ? 24 : 34, 160 / Math.max(1, shape.length));
+    const targetCell = drag.heroId !== undefined && drag.anchor !== undefined
+      ? this.cells.get(`${drag.heroId}:${drag.anchor}`) : undefined;
+    const size = targetCell?.size ?? (this.narrowPortrait ? 16 : this.compactLayout ? 24 : 34);
+    const x = drag.x - (drag.grabX + .5) * size, y = drag.y - (drag.grabY + .5) * size;
     const g = this.acquireGraphics(); g.fillStyle(drag.valid === false ? 0xae4f4e : 0xb98954, .82);
-    for (const [dx, dy] of shape) g.fillRoundedRect(drag.x + dx * size, drag.y + dy * size, size - 2, size - 2, 3);
+    for (const [dx, dy] of shape) g.fillRoundedRect(x + dx * size, y + dy * size, size - 2, size - 2, 3);
     this.addToRoot(g);
-    const image = this.itemImage(drag.item, drag.x + size / 2, drag.y + size / 2, size * .9); image.setAlpha(.9);
+    this.drawFootprintArt(drag.item, shape, x, y, size).setAlpha(.92);
   }
 
   private itemSpeech(): void {
+    if (this.ui.run.stage === 'route') return;
     const speech = this.ui.dialogue.active;
     if (!speech || speech.expiresAt <= this.now) return;
     if (this.ui.run.stage !== 'battle' && (speech.trigger === 'kill' || speech.trigger === 'ownerDeath')) return;
@@ -1741,6 +1854,7 @@ export class PhaserHUD {
       this.button(row.muted ? 'Вкл.' : 'Выкл.', trackX + trackW + 18, rowY + 8, buttonW, 40, 'audio-mute', row.channel);
     });
     this.button('Готово', x + w * .20, y + h * .69, w * .60, Math.min(46, h * .13), 'options');
+    this.text(`Версия ${GAME_VERSION}`, x + w / 2, y + h * .85, 11, '#c1b1b9', w * .6, .5);
   }
 
   private modalBackdrop(): void {
@@ -1764,49 +1878,78 @@ export class PhaserHUD {
   private heroInfoDialog(): void {
     const hero = this.ui.state.heroes.find(candidate => candidate.id === this.ui.heroInfoId);
     if (!hero) return;
-    const w = Math.min(this.width - 20, 660), h = Math.min(this.height - 20, hero.isPuppet ? 690 : 470), x = (this.width - w) / 2, y = (this.height - h) / 2;
-    this.modalBackdrop(); this.panelTexture(x, y, w, h);
-    this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'close-hero-info' });
-    this.titleText(hero.name, x + w / 2, y + h * .215, Math.min(26, h * .06), '#f1d49f', w * .76, .5).setOrigin(.5);
-    const s = hero.attributes;
-    const signed = (value: number): string => value >= 0 ? `+${value}` : `−${Math.abs(value)}`;
+    const narrow = this.width < 450;
+    const width = Math.min(this.width - 16, 560);
+    const inset = narrow ? 26 : 34;
+    const contentWidth = width - inset * 2;
     const form = hero.isPuppet ? getPuppetForm(hero.puppetFormId) : undefined;
     const pending = hero.status === 'rebirthing' ? getPuppetForm(hero.pendingPuppetFormId) : undefined;
-    const stateLabel = `${actorStatus[hero.status]}${form ? ` · ${form.name}` : pending ? ` · станет ${pending.name}` : ''}`;
-    const stateText = this.text(stateLabel, x + w / 2, y + h * .25, 13, '#d9c7aa', w * .76, .5);
-    if (stateText.width > w * .76) stateText.setScale(w * .76 / stateText.width);
-    const left = x + w * .10, contentWidth = w * .80, gap = Math.max(14, w * .04), columnWidth = (contentWidth - gap) / 2;
-    const rows = [
-      { name: 'Сила', value: s.strength, effect: `Урон оружия ${signed(attributeModifier(s.strength) * 5)}%` },
-      { name: 'Ловкость', value: s.dexterity, effect: `Перезарядка ${signed(-attributeModifier(s.dexterity) * 2)}%` },
-      { name: 'Стойкость', value: s.constitution, effect: `Броня ${heroArmor(hero)}/${MAX_ARMOR} (стойкость ${signed(attributeModifier(s.constitution))})` },
-      { name: 'Разум', value: s.intellect, effect: `Урон вещей ${signed(attributeModifier(s.intellect) * 5)}%` },
-      { name: 'Воля', value: s.wisdom, effect: `Лечение ${signed(attributeModifier(s.wisdom) * 5)}%` },
-      { name: 'Дух', value: s.presence, effect: `Подзавод ${signed(attributeModifier(s.presence) * 5)}%` },
-    ];
-    this.titleText('Характеристики', left, y + h * .29, Math.min(17, h * .038), '#e9ca91', contentWidth);
+    const formContent = form ? [
+      `${puppetBranchLabels[form.branch]} · расход ${formatItemNumber(form.windDrainPerSecond)}/с`,
+      `Входящий урон ×${formatItemNumber(form.damageTakenMultiplier)}`,
+      `${form.passiveName}: ${form.passiveDescription}`,
+      ...form.cellModifiers.map(cell => cell.label),
+    ].join('\n') : pending ? `Новая форма: ${pending.name}` : '';
+    const formText = formContent ? this.acquireText(0, 0, formContent, {
+      fontFamily: 'Georgia, serif', fontSize: narrow ? 12 : 14, color: '#e8dbc9', lineSpacing: 2,
+      wordWrap: { width: contentWidth, useAdvancedWrap: true }, resolution: 2,
+    }) : undefined;
+    const formHeight = formText ? 24 + formText.height : 0;
+    const height = 470 + formHeight;
+    const x = (this.width - width) / 2, y = (this.height - height) / 2;
+    const left = x + inset, top = y + 28;
+    const theme = classCardThemes[heroClassForActor(hero) ?? 'guard'];
+    this.modalBackdrop();
+    this.panelTexture(x, y, width, height);
+    this.zones.push({ x: 0, y: 0, width: this.width, height: this.height, action: 'close-hero-info' });
+    this.addToRoot(this.acquireGraphics().fillStyle(theme.header, .72).fillRoundedRect(left, top, contentWidth, 64, 5));
+    this.actorImage(hero.id, left + 37, top + 32, 58, hero.status, theme.dollTint);
+    const accent = `#${theme.engraving.toString(16)}`;
+    const labelX = left + 76;
+    this.titleText(hero.name, labelX, top + 7, narrow ? 21 : 24, '#fff0d8', contentWidth - 82);
+    this.text(actorCardStatus[hero.status], labelX, top + 32, 12, accent);
+    const resource = hero.status === 'human' ? `Здоровье ${Math.ceil(hero.hp)} / ${hero.maxHp}`
+      : hero.isPuppet ? `Прочность ${hero.durability} / ${hero.maxDurability} · завод ${Math.ceil(hero.windUpCharge)} / ${hero.maxWindUp}` : '';
+    if (resource) this.simpleWrappedText(resource, labelX, top + 47, narrow ? 10 : 12, '#f2dfc9', contentWidth - 78);
+
+    const rows = heroAttributeRows(hero.attributes);
+    const gap = 8, columnWidth = (contentWidth - gap) / 2;
+    this.titleText('Характеристики', left, top + 77, 16, '#f6d599', contentWidth);
     rows.forEach((row, index) => {
-      const col = index % 2, line = Math.floor(index / 2);
-      const px = left + col * (columnWidth + gap), py = y + h * (.335 + line * .07);
-      const font = Math.max(9, Math.min(15, h * .027));
-      const name = this.text(row.name, px, py, font, '#f2e4ce');
-      if (name.width > columnWidth * .56) name.setScale(columnWidth * .56 / name.width);
-      const value = this.text(`${row.value} (${signed(attributeModifier(row.value))})`, px + columnWidth, py, font, '#f0d39e', undefined, 1);
-      if (value.width > columnWidth * .42) value.setScale(columnWidth * .42 / value.width);
-      const effect = this.text(row.effect, px, py + Math.max(13, h * .027), Math.max(8, font - 2), '#bdb1a7').setFontStyle('normal');
-      if (effect.width > columnWidth) effect.setScale(columnWidth / effect.width);
+      const tileX = left + index % 2 * (columnWidth + gap), tileY = top + 99 + Math.floor(index / 2) * 36;
+      this.addToRoot(this.acquireGraphics().fillStyle(theme.fill, .93).fillRoundedRect(tileX, tileY, columnWidth, 32, 3));
+      this.text(row.name, tileX + 7, tileY + 9, 12, '#e8dacc');
+      this.text(row.modifier, tileX + columnWidth - 6, tileY + 10, 11, accent, undefined, 1);
+      this.text(String(row.score), tileX + columnWidth - 29, tileY + 4, 20, '#fff1d8', undefined, 1);
     });
-    if (form) {
-      const formY = y + h * .56;
-      this.titleText('Кукольная форма', left, formY, Math.min(17, h * .038), '#e9ca91', contentWidth);
-      const detail = `${puppetBranchLabels[form.branch]}\nПрочность ${hero.durability}/${hero.maxDurability} · завод ${Math.ceil(hero.windUpCharge)}/${hero.maxWindUp} · броня ${form.armor}\nРасход ${form.windDrainPerSecond}/с · входящий урон ×${form.damageTakenMultiplier.toFixed(2)}\n\n${form.passiveName}: ${form.passiveDescription}\n${form.cellModifiers.map(cell => cell.label).join(' ')}`;
-      const body = this.text(detail, left, formY + h * .04, Math.max(10, Math.min(14, h * .025)), '#e3d5c0', contentWidth).setFontStyle('normal');
-      if (body.height > h * .19) body.setScale(h * .19 / body.height);
-    } else if (pending) {
-      const body = this.text(`Перерождение: ${pending.name}`, left, y + h * .57, 13, '#e3d5c0', contentWidth);
-      if (body.width > contentWidth) body.setScale(contentWidth / body.width);
+    this.simpleWrappedText('Малое число — модификатор: (значение − 10) / 2 с округлением вниз.', left, top + 209, 11, '#d8c9bc', contentWidth);
+    this.titleText('Что дают характеристики', left, top + 240, 15, '#f6d599', contentWidth);
+    rows.forEach((row, index) => {
+      const effectX = left + index % 2 * (columnWidth + gap), effectY = top + 262 + Math.floor(index / 2) * 17;
+      this.text(row.effect, effectX, effectY, 11, '#ebdfd1');
+      this.text(row.bonus, effectX + columnWidth - 3, effectY, 11, accent, undefined, 1);
+    });
+
+    const armor = heroArmorBreakdown(hero);
+    this.titleText(`Броня ${armor.total} / ${MAX_ARMOR}`, left, top + 316, 15, '#f6d599', contentWidth);
+    const origin = armor.form ? ` · форма ${signedNumber(armor.form)}` : '';
+    this.simpleWrappedText(`Снаряжение ${signedNumber(armor.equipment)} · стойкость ${signedNumber(armor.constitution)}${origin}. Максимум ${MAX_ARMOR}.`,
+      left, top + 336, 11, '#e8dbc9', contentWidth);
+    if (formText) {
+      const formY = top + 361;
+      if (form) this.titleText(form.name, left, formY, 16, '#f6d599', contentWidth);
+      this.addToRoot(formText.setPosition(left, formY + (form ? 22 : 4)));
     }
-    this.button('Закрыть', x + w * .20, y + h * (hero.isPuppet ? .79 : .70), w * .60, Math.min(48, h * .10), 'close-hero-info');
+    this.button('Закрыть', x + inset, y + height - 70, contentWidth, 44, 'close-hero-info');
+  }
+
+  private simpleWrappedText(value: string, x: number, y: number, size: number, color: string, width: number): Phaser.GameObjects.Text {
+    const text = this.acquireText(x, y, value, {
+      fontFamily: 'Georgia, serif', fontSize: size, color, lineSpacing: 2, resolution: 2,
+      wordWrap: { width, useAdvancedWrap: true },
+    });
+    this.addToRoot(text);
+    return text;
   }
 
   private card(x: number, y: number, width: number, height: number, label: string): void {

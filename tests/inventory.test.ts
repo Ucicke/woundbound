@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFullEncounter } from '../src/combat/encounter.ts';
-import { INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../src/combat/inventory.ts';
+import { canPlaceItem, INVENTORY_CELL_COUNT, INVENTORY_GRID_SIZE, itemBonuses, moveItem, occupiedCells, rotateItemInInventory, storeItem } from '../src/combat/inventory.ts';
 import { applyEffect, prepareEncounter, startBattle, stepEncounter, type CombatItem } from '../src/combat/simulation.ts';
 import { createItem } from '../src/combat/items.ts';
 import { COMBAT_CONFIG } from '../src/combat/config.ts';
@@ -13,6 +13,15 @@ function encounterWithLooseItems() {
 }
 
 describe('inventory ownership and adjacency', () => {
+  it('allows a rotated drag preview to share cells with its source, but not with another item', () => {
+    const state = encounterWithLooseItems();
+    prepareEncounter(state);
+    const hero = state.heroes[0]!;
+    const item = state.floor[0]!;
+    expect(moveItem(state, item.id, hero.id, 1)).toBe(true);
+    expect(canPlaceItem(state, { ...item, rotation: 1 }, hero.id, 1, item)).toBe(true);
+    expect(canPlaceItem(state, { ...item, rotation: 1 }, hero.id, 0, item)).toBe(false);
+  });
   it('validates whole item shapes and keeps ownership unchanged after invalid moves', () => {
     const state = encounterWithLooseItems();
     prepareEncounter(state);
